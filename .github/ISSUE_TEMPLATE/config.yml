@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Home Assistant Community Forum
+    url: https://community.home-assistant.io/
+    about: Share setups and ask usage questions.
+  - name: GitHub Discussions
+    url: https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card/discussions
+    about: Ideas and config help that are not a confirmed bug.
