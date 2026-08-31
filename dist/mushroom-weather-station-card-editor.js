@@ -304,7 +304,21 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         label.field { display: grid; gap: 6px; font-size: 13px; color: var(--primary-text-color); }
         input, select { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--divider-color); background: var(--mdc-text-field-fill-color, var(--card-background-color)); color: var(--primary-text-color); font: inherit; }
         ha-entity-picker { display: block; width: 100%; }
-        .check { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+        ha-form { display: block; }
+        .switch-list { display: flex; flex-direction: column; gap: 0; }
+        .switch-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 16px;
+          min-height: 48px;
+          padding: 4px 0;
+          border-bottom: 1px solid var(--divider-color);
+        }
+        .switch-row .switch-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+        .switch-row .switch-title { font-size: 14px; color: var(--primary-text-color); }
+        .switch-row .switch-help { font-size: 12px; color: var(--secondary-text-color); }
+        ha-switch { flex-shrink: 0; }
         .slot { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--divider-color); }
         .slot-extra { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
         @media (max-width: 520px) { .row, .slot-extra { grid-template-columns: 1fr; } }
@@ -353,17 +367,11 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <option value="metric" ${c.unit_system === "metric" ? "selected" : ""}>Metric (°C, km/h, mm)</option>
           </select>
         </label>
-        <label class="check"><input type="checkbox" data-key="tablet_mode" ${c.tablet_mode ? "checked" : ""} /> Tablet mode (hold for more-info)</label>
-        <label class="check"><input type="checkbox" data-key="show_empty" ${c.show_empty ? "checked" : ""} /> Show empty tiles</label>
-        <label class="check"><input type="checkbox" data-key="show_forecast" ${c.show_forecast ? "checked" : ""} /> Show forecast row</label>
+        <div id="options-switches" class="switch-list"></div>
         <div id="weather-picker"></div>
         <h3>Sections</h3>
-        <label class="check"><input type="checkbox" data-key="hide_conditions" ${c.hide_conditions ? "checked" : ""} /> Hide conditions</label>
-        <label class="check"><input type="checkbox" data-key="hide_wind" ${c.hide_wind ? "checked" : ""} /> Hide wind</label>
-        <label class="check"><input type="checkbox" data-key="hide_rain" ${c.hide_rain ? "checked" : ""} /> Hide rain</label>
-        <label class="check"><input type="checkbox" data-key="hide_sun" ${c.hide_sun ? "checked" : ""} /> Hide sun</label>
-        <label class="check"><input type="checkbox" data-key="hide_more" ${c.hide_more ? "checked" : ""} /> Hide station (pressure / indoor / CO₂)</label>
-        <label class="check"><input type="checkbox" data-key="hide_battery" ${c.hide_battery ? "checked" : ""} /> Hide battery</label>
+        <p class="help">Off = show the section when it has data. On = hide it even if sensors exist.</p>
+        <div id="section-switches" class="switch-list"></div>
       `;
     } else if (tab === "display") {
       body.innerHTML = `
@@ -391,6 +399,22 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         this._setField(target.dataset.key, value, target.dataset.section);
       });
     });
+
+    if (tab === "layout") {
+      this._fillSwitches("options-switches", [
+        { key: "tablet_mode", title: "Tablet mode", help: "Tap does nothing. Hold a tile for more-info." },
+        { key: "show_empty", title: "Show empty tiles", help: "Keep tiles visible when the entity is missing." },
+        { key: "show_forecast", title: "Show forecast row", help: "Needs a weather entity below." },
+      ]);
+      this._fillSwitches("section-switches", [
+        { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
+        { key: "hide_wind", title: "Hide wind", help: "Compass, speed, gust, max gust" },
+        { key: "hide_rain", title: "Hide rain", help: "Sparkline and rain totals" },
+        { key: "hide_sun", title: "Hide sun", help: "UV, solar, light" },
+        { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
+        { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" },
+      ]);
+    }
 
     if (tab === "layout" && pickerReady && this._hass) {
       const host = this.shadowRoot.getElementById("weather-picker");
@@ -452,6 +476,35 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       host.appendChild(wrap);
     });
     this._built = true;
+  }
+
+  _fillSwitches(hostId, items) {
+    const host = this.shadowRoot.getElementById(hostId);
+    if (!host) return;
+    host.replaceChildren();
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "switch-row";
+      const copy = document.createElement("div");
+      copy.className = "switch-copy";
+      copy.innerHTML = `<span class="switch-title">${this._esc(item.title)}</span>${item.help ? `<span class="switch-help">${this._esc(item.help)}</span>` : ""}`;
+      const useHaSwitch = !!customElements.get("ha-switch");
+      const sw = document.createElement(useHaSwitch ? "ha-switch" : "input");
+      if (!useHaSwitch) {
+        sw.type = "checkbox";
+        sw.style.width = "20px";
+        sw.style.height = "20px";
+        sw.style.flexShrink = "0";
+      }
+      sw.checked = !!this._config[item.key];
+      sw.addEventListener("change", (ev) => {
+        ev.stopPropagation();
+        this._setField(item.key, !!sw.checked);
+      });
+      row.appendChild(copy);
+      row.appendChild(sw);
+      host.appendChild(row);
+    });
   }
 
   _esc(s) {
