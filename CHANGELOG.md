@@ -2,9 +2,11 @@
 
 ## 0.4.0 — 2026-08-31
 
-This is the first release that actually ships the 0.3 feature set in `dist/` (GitHub was still on 0.1.0 JS).
+Stable release. Split into card + editor modules (AlertTicker layout).
 
-- Editor shows **v0.4.0** so you can tell HACS upgraded the file
+- Card: `mushroom-weather-station-card.js`
+- Editor: `mushroom-weather-station-card-editor.js` (loaded only when Edit opens)
+- Editor banner shows **v0.4.0** so you can confirm HACS upgraded the file
 - `ha-entity-picker` overrides + prefix auto-fill
 - Threshold icon colors, compact layout, hide-section toggles
 - Per-tile tap / hold / double-tap actions
