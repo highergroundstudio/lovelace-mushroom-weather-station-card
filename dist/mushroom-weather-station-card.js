@@ -1,11 +1,11 @@
 /**
  * Mushroom Weather Station Card
  * Home Assistant Lovelace custom card — HACS plugin
- * Version 0.4.0
+ * Version 0.4.6
  *
  * type: custom:mushroom-weather-station-card
  */
-const CARD_VERSION = "0.4.1";
+const CARD_VERSION = "0.4.6";
 const CARD_TYPE = "mushroom-weather-station-card";
 const CARD_NAME = "Mushroom Weather Station Card";
 
@@ -258,13 +258,15 @@ function convertValue(value, unit, target) {
 /* -------------------------------------------------------------------------- */
 
 class MushroomWeatherStationCard extends HTMLElement {
+  static VERSION = CARD_VERSION;
+
   static getStubConfig() {
     return { prefix: "ws", layout: "full", name: "Weather Station", unit_system: "native" };
   }
 
   static async getConfigElement() {
     if (!customElements.get(`${CARD_TYPE}-editor`)) {
-      await import("./mushroom-weather-station-card-editor.js");
+      await import(`./mushroom-weather-station-card-editor.js?v=${CARD_VERSION}`);
     }
     return document.createElement(`${CARD_TYPE}-editor`);
   }

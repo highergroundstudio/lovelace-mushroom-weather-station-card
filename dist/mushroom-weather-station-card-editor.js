@@ -1,9 +1,12 @@
 /**
  * Mushroom Weather Station Card — visual editor
- * Version 0.4.0
+ * Version 0.4.6
  */
-const CARD_VERSION = "0.4.0";
 const CARD_TYPE = "mushroom-weather-station-card";
+const CARD_VERSION =
+  customElements.get(CARD_TYPE)?.VERSION ||
+  customElements.get(CARD_TYPE)?.constructor?.VERSION ||
+  "dev";
 
 const PREFIX_MAP = {
   temperature: "sensor.{p}_temperature",
