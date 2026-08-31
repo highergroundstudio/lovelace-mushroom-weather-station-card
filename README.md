@@ -1,29 +1,39 @@
 # Mushroom Weather Station Card
 
-A Home Assistant Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Mushroom-style tiles, heat/UV coloring, and a one-field prefix mapper so you are not wiring 20+ entities by hand.
+A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Prefix auto-fill, Home Assistant entity pickers, heat/UV coloring, wind compass, and rain sparkline.
 
 ![Mushroom Weather Station Card](images/card-preview.svg)
 
-![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.8+-41BDF5.svg)
-![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.8+-41BDF5.svg)](https://www.home-assistant.io)
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz)
+[![Release](https://img.shields.io/github/v/release/highergroundstudio/lovelace-mushroom-weather-station-card.svg)](https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card/releases)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-## Install with HACS (custom repository)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=highergroundstudio&repository=lovelace-mushroom-weather-station-card&category=plugin)
+
+## About
+
+One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
+
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.4.0**.
+
+## Install with HACS
 
 1. HACS → **Custom repositories**
-2. Repository: `https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card`
-3. Type: **Dashboard** (Lovelace / plugin)
+2. URL: `https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card`
+3. Type: **Dashboard**
 4. Download **Mushroom Weather Station Card**
-5. Hard-refresh the browser
+5. Hard-refresh the browser (Ctrl+F5)
 
 ```yaml
 url: /hacsfiles/lovelace-mushroom-weather-station-card/mushroom-weather-station-card.js
 type: module
 ```
 
-Mushroom itself is **not required**.
+Both of these files must be in the same folder after install:
 
-Confirm the install in the card editor banner: `Mushroom Weather Station Card · v0.4.0`.
+- `mushroom-weather-station-card.js` — card
+- `mushroom-weather-station-card-editor.js` — visual editor (loaded when you open Edit)
 
 ## Add the card
 
@@ -35,11 +45,9 @@ layout: full
 unit_system: native
 ```
 
-`prefix: ws` fills Ecowitt-style IDs such as `sensor.ws_temperature` and `sensor.ws_daily_rain`.
-
 Layouts: `full`, `compact`, `chips`.
 
-## Useful options
+## Options
 
 ```yaml
 unit_system: imperial   # or metric | native
@@ -61,8 +69,16 @@ units:
   rain_today: in
 ```
 
-Visual editor tabs: **Layout**, **Entities**, **Display**.
+Visual editor tabs: **Layout** · **Entities** · **Display**.
+
+## Just to be clear
+
+This project is **not affiliated with, endorsed, or supported by** the Home Assistant project or by the Mushroom Cards authors. It is provided as-is.
+
+## Contributing
+
+Bugs and ideas: use the GitHub issue templates (bug / feature). Pull requests against `main` are welcome.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
