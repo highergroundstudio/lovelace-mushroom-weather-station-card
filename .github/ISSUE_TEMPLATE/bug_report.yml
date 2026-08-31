@@ -1,0 +1,86 @@
+name: "Bug report"
+description: Report a bug or unexpected behaviour in Mushroom Weather Station Card
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Fill this in so it can be reproduced.
+
+  - type: input
+    id: version
+    attributes:
+      label: Card version
+      description: HACS page or GitHub release tag.
+      placeholder: "e.g. 0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      description: Settings → About in HA.
+      placeholder: "e.g. 2026.8.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options:
+        - Chrome (desktop)
+        - Firefox (desktop)
+        - Safari (desktop / macOS)
+        - Edge (desktop)
+        - HA Companion iOS
+        - HA Companion Android
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: describe
+    attributes:
+      label: Describe the bug
+      placeholder: "When I do X, Y happens — I expected Z."
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Card YAML
+      description: Paste the YAML from the code editor.
+      render: yaml
+    validations:
+      required: true
+
+  - type: textarea
+    id: entities
+    attributes:
+      label: Weather station prefix / entities
+      description: Example `prefix: ws` or the override entity IDs.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (optional)
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console errors (optional)
+      description: DevTools → Console. Copy anything related to mushroom-weather-station-card.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and could not find a duplicate.
+          required: true
+        - label: I cleared the browser cache after updating.
+          required: true
