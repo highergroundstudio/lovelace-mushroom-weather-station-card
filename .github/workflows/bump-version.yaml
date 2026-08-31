@@ -1,0 +1,34 @@
+name: Bump version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version number (example 0.4.3)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stamp version
+        run: bash scripts/set-version.sh "${{ inputs.version }}"
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json README.md dist/mushroom-weather-station-card.js mushroom-weather-station-card.js || true
+          if git diff --cached --quiet; then
+            echo "Nothing to commit. CARD_VERSION may already be ${{ inputs.version }}."
+            exit 0
+          fi
+          git commit -m "Bump version to ${{ inputs.version }}"
+          git push
