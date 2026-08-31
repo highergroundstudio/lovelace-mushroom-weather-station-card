@@ -1,0 +1,45 @@
+name: "Feature request"
+description: Suggest a new feature or improvement for Mushroom Weather Station Card
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Keep this concrete so it can be implemented.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: "I want to show X from my weather station, but the card only shows Y."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should it work? Include a config option name if you have one.
+      placeholder: |
+        New option `show_solar`:
+        ```yaml
+        type: custom:mushroom-weather-station-card
+        prefix: ws
+        show_solar: true
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and could not find a similar request.
+          required: true
