@@ -1,11 +1,11 @@
 /**
  * Mushroom Weather Station Card
  * Home Assistant Lovelace custom card — HACS plugin
- * Version 0.4.6
+ * Version 0.4.7
  *
  * type: custom:mushroom-weather-station-card
  */
-const CARD_VERSION = "0.4.6";
+const CARD_VERSION = "0.4.7";
 const CARD_TYPE = "mushroom-weather-station-card";
 const CARD_NAME = "Mushroom Weather Station Card";
 
@@ -172,17 +172,27 @@ function formatLastRain(st, hass) {
   const raw = st?.state;
   if (!raw || raw === "unknown" || raw === "unavailable") return "—";
   const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return raw;
+  if (Number.isNaN(date.getTime())) return String(raw);
+  const locale = hass?.locale?.language || undefined;
   try {
-    return new Intl.DateTimeFormat(hass?.locale?.language || undefined, {
-      month: "numeric",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    }).format(date);
+    return relativeTime(date, locale);
   } catch (_e) {
     return date.toLocaleString();
   }
+}
+
+function relativeTime(date, locale) {
+  const diffMs = date.getTime() - Date.now();
+  const diffSec = Math.round(diffMs / 1000);
+  const abs = Math.abs(diffSec);
+  const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (abs < 45) return rtf.format(0, "second");
+  if (abs < 90) return rtf.format(Math.sign(diffSec) || -1, "minute");
+  if (abs < 3600) return rtf.format(Math.round(diffSec / 60), "minute");
+  if (abs < 3600 * 36) return rtf.format(Math.round(diffSec / 3600), "hour");
+  if (abs < 86400 * 14) return rtf.format(Math.round(diffSec / 86400), "day");
+  if (abs < 86400 * 60) return rtf.format(Math.round(diffSec / (86400 * 7)), "week");
+  return rtf.format(Math.round(diffSec / (86400 * 30)), "month");
 }
 
 function batteryInfo(st, threshold) {
@@ -284,12 +294,22 @@ class MushroomWeatherStationCard extends HTMLElement {
       thresholds: {},
       ...config,
     });
+    this._forecastSubId = null;
+    this._ensureForecastSub();
     this._render();
   }
 
   set hass(hass) {
     this._hass = hass;
+    this._ensureForecastSub();
     this._render();
+  }
+
+  disconnectedCallback() {
+    if (this._forecastUnsub) {
+      try { this._forecastUnsub(); } catch (_e) { /* ignore */ }
+      this._forecastUnsub = null;
+    }
   }
 
   get hass() {
@@ -446,14 +466,69 @@ class MushroomWeatherStationCard extends HTMLElement {
     return `<div class="spark">${bars}</div>`;
   }
 
+  async _ensureForecastSub() {
+    const id = this._config?.show_forecast ? this._config.weather_entity : null;
+    if (!id || !this._hass) {
+      if (this._forecastUnsub) {
+        try { this._forecastUnsub(); } catch (_e) { /* ignore */ }
+        this._forecastUnsub = null;
+      }
+      this._forecastSubId = null;
+      return;
+    }
+    if (this._forecastSubId === id && this._forecastUnsub) return;
+    if (this._forecastUnsub) {
+      try { this._forecastUnsub(); } catch (_e) { /* ignore */ }
+      this._forecastUnsub = null;
+    }
+    this._forecastSubId = id;
+    this._forecastDays = [];
+    this._forecastError = null;
+
+    const attrDays = entityState(this._hass, id)?.attributes?.forecast;
+    if (Array.isArray(attrDays) && attrDays.length) this._forecastDays = attrDays;
+
+    try {
+      if (this._hass.connection?.subscribeMessage) {
+        this._forecastUnsub = await this._hass.connection.subscribeMessage(
+          (ev) => {
+            this._forecastDays = ev?.forecast || [];
+            this._forecastError = this._forecastDays.length ? null : "empty";
+            this._render();
+          },
+          { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id },
+        );
+        return;
+      }
+    } catch (_err) {
+      /* fall through to one-shot */
+    }
+
+    try {
+      const result = await this._hass.connection.sendMessagePromise({
+        type: "call_service",
+        domain: "weather",
+        service: "get_forecasts",
+        service_data: { type: "daily", entity_id: id },
+        return_response: true,
+      });
+      this._forecastDays = result?.response?.[id]?.forecast || [];
+      if (!this._forecastDays.length) this._forecastError = "empty";
+    } catch (err) {
+      this._forecastError = err?.message || "failed";
+    }
+    this._render();
+  }
+
   _forecast() {
     if (!this._config.show_forecast) return "";
     const id = this._config.weather_entity;
     const st = entityState(this._hass, id);
-    if (!st) return "";
-    const days = (st.attributes.forecast || []).slice(0, 5);
+    if (!id) return `<div class="forecast hint">Pick a weather entity for forecast.</div>`;
+    if (!st) return `<div class="forecast hint">Weather entity ${this._esc(id)} is missing.</div>`;
+    const days = (this._forecastDays || st.attributes.forecast || []).slice(0, 5);
     if (!days.length) {
-      return `<div class="forecast hint">No forecast on ${this._esc(id)}. Some integrations moved forecast off attributes.</div>`;
+      return `<div class="forecast hint">Waiting for daily forecast from ${this._esc(id)}…</div>`;
     }
     const target = this._config.unit_system || "native";
     const tempUnit = st.attributes.temperature_unit || "";
