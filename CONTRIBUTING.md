@@ -12,14 +12,16 @@ Use the **bug** or **feature** templates. Include:
 
 ## Code
 
-- Card: `mushroom-weather-station-card.js` (this file owns `CARD_VERSION`)
-- Editor: `mushroom-weather-station-card-editor.js` (reads version from the card custom element)
-- Both files must ship together in `dist/` and on the GitHub release
+- Card: `dist/mushroom-weather-station-card.js` (owns `CARD_VERSION`)
+- Editor: `dist/mushroom-weather-station-card-editor.js` (reads version from the card)
+- Both files must ship together on the GitHub release
 
-## Bump a version
+## Release from github.com
 
-```bash
-./scripts/set-version.sh 0.4.3
-```
+1. Commit the JS changes to `main` first (the workflow tags whatever is on `main`).
+2. **Actions** → **Release** → **Run workflow**
+3. Version: `0.4.3`
+4. Optional notes
+5. Leave pre-release off unless you want a beta
 
-That updates `CARD_VERSION` in the card JS, `package.json`, and the README banner. Then copy both JS files into `dist/`, commit, tag `v0.4.3`, and attach both files on the GitHub release.
+That stamps `CARD_VERSION`, commits, tags `v0.4.3`, and publishes a GitHub release with both `dist/` JS files attached. HACS picks that release up as an update.
