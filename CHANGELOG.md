@@ -1,12 +1,22 @@
 # Changelog
 
+## 0.4.2 — 2026-08-31
+
+- Editor toggles use Home Assistant `ha-switch` rows instead of raw checkboxes
+- Each option is label + help on the left, switch on the right
+- Section hide switches explain what they cover
+
+## 0.4.1 — 2026-08-31
+
+- HACS store polish (README badges, Open in HACS, contributing, security)
+
 ## 0.4.0 — 2026-08-31
 
 Stable release. Split into card + editor modules (AlertTicker layout).
 
 - Card: `mushroom-weather-station-card.js`
 - Editor: `mushroom-weather-station-card-editor.js` (loaded only when Edit opens)
-- Editor banner shows **v0.4.0** so you can confirm HACS upgraded the file
+- Editor banner shows version so you can confirm HACS upgraded the file
 - `ha-entity-picker` overrides + prefix auto-fill
 - Threshold icon colors, compact layout, hide-section toggles
 - Per-tile tap / hold / double-tap actions
