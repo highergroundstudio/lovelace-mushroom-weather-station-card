@@ -6,10 +6,11 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 
 ## Highlights
 
-- One `prefix` field maps Ecowitt-style entities (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …)
+- One `prefix` field maps Ecowitt-style entities
 - Home Assistant entity pickers for every override
 - Layouts: `full`, `compact`, `chips`
-- Heat / UV / rain coloring
+- Threshold colors, wind compass, rain sparkline
+- Optional forecast from a `weather.*` entity
 - Mushroom is not required
 
 ## Example
