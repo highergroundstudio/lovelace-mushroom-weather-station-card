@@ -2,6 +2,8 @@
 
 A Home Assistant Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Mushroom-style tiles, heat/UV coloring, and a one-field prefix mapper so you are not wiring 19 entities by hand.
 
+![Mushroom Weather Station Card](images/card-preview.svg)
+
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2024.8+-41BDF5.svg)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
@@ -35,6 +37,12 @@ layout: full
 `prefix: ws` fills Ecowitt-style entity IDs such as `sensor.ws_temperature` and `sensor.ws_daily_rain`.
 
 Layouts: `full`, `compact`, `chips`.
+
+Use the visual editor to override any sensor with Home Assistant entity pickers.
+
+## Topics
+
+`hacs` · `lovelace` · `home-assistant` · `weather` · `lovelace-card`
 
 ## License
 
