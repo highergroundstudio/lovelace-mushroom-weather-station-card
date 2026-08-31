@@ -15,7 +15,7 @@ A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine
 
 One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
 
-Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.4.0**.
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.4.2**.
 
 ## Install with HACS
 
