@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version number (example 0.4.3)
+        required: true
+        type: string
+      notes:
+        description: Release notes (optional). GitHub also adds auto notes.
+        required: false
+        type: string
+      prerelease:
+        description: Mark as pre-release
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version
+        env:
+          VER: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)?$ ]]; then
+            echo "Version must look like 0.4.3" >&2
+            exit 1
+          fi
+          if git rev-parse "v$VER" >/dev/null 2>&1; then
+            echo "Tag v$VER already exists" >&2
+            exit 1
+          fi
+
+      - name: Stamp CARD_VERSION
+        run: bash scripts/set-version.sh "${{ inputs.version }}"
+
+      - name: Prepend CHANGELOG
+        env:
+          VER: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          tmp=$(mktemp)
+          {
+            echo "# Changelog"
+            echo
+            echo "## ${VER} — ${today}"
+            echo
+            if [[ -n "$NOTES" ]]; then
+              printf '%s\n' "$NOTES"
+            else
+              echo "- See GitHub release notes."
+            fi
+            echo
+            if [[ -f CHANGELOG.md ]]; then
+              tail -n +2 CHANGELOG.md
+            fi
+          } > "$tmp"
+          mv "$tmp" CHANGELOG.md
+
+      - name: Commit version bump
+        env:
+          VER: ${{ inputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json README.md CHANGELOG.md \
+            dist/mushroom-weather-station-card.js \
+            dist/mushroom-weather-station-card-editor.js \
+            mushroom-weather-station-card.js \
+            mushroom-weather-station-card-editor.js || true
+          if git diff --cached --quiet; then
+            echo "No file changes after stamp; continuing to tag current main."
+          else
+            git commit -m "Release v${VER}"
+            git push origin HEAD:main
+          fi
+
+      - name: Tag and publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ inputs.version }}
+          NOTES: ${{ inputs.notes }}
+          PRE: ${{ inputs.prerelease }}
+        run: |
+          git tag "v${VER}"
+          git push origin "v${VER}"
+
+          extra=()
+          if [[ "$PRE" == "true" ]]; then
+            extra+=(--prerelease)
+          fi
+          if [[ -n "$NOTES" ]]; then
+            extra+=(--notes "$NOTES")
+          else
+            extra+=(--generate-notes)
+          fi
+
+          files=()
+          for f in dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js; do
+            if [[ -f "$f" ]]; then
+              files+=("$f")
+            fi
+          done
+          if [[ ${#files[@]} -eq 0 ]]; then
+            echo "No dist JS files to attach" >&2
+            exit 1
+          fi
+
+          gh release create "v${VER}" "${files[@]}" \
+            --title "v${VER}" \
+            --latest \
+            "${extra[@]}"
