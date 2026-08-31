@@ -1,6 +1,6 @@
 # Mushroom Weather Station Card
 
-A Home Assistant Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Mushroom-style tiles, heat/UV coloring, and a one-field prefix mapper so you are not wiring 19 entities by hand.
+A Home Assistant Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Mushroom-style tiles, heat/UV coloring, and a one-field prefix mapper so you are not wiring 20+ entities by hand.
 
 ![Mushroom Weather Station Card](images/card-preview.svg)
 
@@ -10,13 +10,11 @@ A Home Assistant Lovelace card for **personal weather station** sensors (Ecowitt
 
 ## Install with HACS (custom repository)
 
-This card ships as a HACS **Dashboard** plugin. Until it is in the default store:
-
 1. HACS → **Custom repositories**
 2. Repository: `https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card`
 3. Type: **Dashboard** (Lovelace / plugin)
 4. Download **Mushroom Weather Station Card**
-5. Refresh the browser
+5. Hard-refresh the browser
 
 ```yaml
 url: /hacsfiles/lovelace-mushroom-weather-station-card/mushroom-weather-station-card.js
@@ -25,6 +23,8 @@ type: module
 
 Mushroom itself is **not required**.
 
+Confirm the install in the card editor banner: `Mushroom Weather Station Card · v0.4.0`.
+
 ## Add the card
 
 ```yaml
@@ -32,17 +32,36 @@ type: custom:mushroom-weather-station-card
 name: Backyard Station
 prefix: ws
 layout: full
+unit_system: native
 ```
 
-`prefix: ws` fills Ecowitt-style entity IDs such as `sensor.ws_temperature` and `sensor.ws_daily_rain`.
+`prefix: ws` fills Ecowitt-style IDs such as `sensor.ws_temperature` and `sensor.ws_daily_rain`.
 
 Layouts: `full`, `compact`, `chips`.
 
-Use the visual editor to override any sensor with Home Assistant entity pickers.
+## Useful options
 
-## Topics
+```yaml
+unit_system: imperial   # or metric | native
+tablet_mode: true
+show_forecast: true
+weather_entity: weather.home
+battery_warning_threshold: 20
+hide_sun: false
+thresholds:
+  uv:
+    - above: 8
+      color: purple
+  temperature:
+    - below: 32
+      color: blue
+labels:
+  temperature: Outside
+units:
+  rain_today: in
+```
 
-`hacs` · `lovelace` · `home-assistant` · `weather` · `lovelace-card`
+Visual editor tabs: **Layout**, **Entities**, **Display**.
 
 ## License
 
