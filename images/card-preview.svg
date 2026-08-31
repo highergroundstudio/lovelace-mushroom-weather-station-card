@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640">
+  <rect width="1200" height="640" fill="#181c24"/>
+  <rect x="80" y="70" width="1040" height="500" rx="28" fill="#212630"/>
+  <text x="120" y="130" fill="#e6e9ef" font-family="DejaVu Sans, Arial, sans-serif" font-size="42" font-weight="700">Backyard Station</text>
+  <text x="120" y="168" fill="#8c96a5" font-family="DejaVu Sans, Arial, sans-serif" font-size="22">Ecowitt · prefix ws</text>
+  <text x="120" y="300" fill="#ffb020" font-family="DejaVu Sans, Arial, sans-serif" font-size="72" font-weight="700">71°</text>
+  <text x="300" y="292" fill="#b4bac4" font-family="DejaVu Sans, Arial, sans-serif" font-size="28">Feels 71°</text>
+  <rect x="120" y="360" width="240" height="90" rx="16" fill="#2a303c"/>
+  <circle cx="148" cy="405" r="8" fill="#3d9bfd"/>
+  <text x="168" y="392" fill="#969eaa" font-family="DejaVu Sans, Arial, sans-serif" font-size="20">Humidity</text>
+  <text x="168" y="424" fill="#eceff4" font-family="DejaVu Sans, Arial, sans-serif" font-size="26">96%</text>
+  <rect x="380" y="360" width="240" height="90" rx="16" fill="#2a303c"/>
+  <circle cx="408" cy="405" r="8" fill="#6bcb77"/>
+  <text x="428" y="392" fill="#969eaa" font-family="DejaVu Sans, Arial, sans-serif" font-size="20">Dew point</text>
+  <text x="428" y="424" fill="#eceff4" font-family="DejaVu Sans, Arial, sans-serif" font-size="26">68.8°</text>
+  <rect x="640" y="360" width="240" height="90" rx="16" fill="#2a303c"/>
+  <circle cx="668" cy="405" r="8" fill="#4cc9f0"/>
+  <text x="688" y="392" fill="#969eaa" font-family="DejaVu Sans, Arial, sans-serif" font-size="20">Rain today</text>
+  <text x="688" y="424" fill="#eceff4" font-family="DejaVu Sans, Arial, sans-serif" font-size="26">0.24 in</text>
+  <rect x="900" y="360" width="220" height="90" rx="16" fill="#2a303c"/>
+  <circle cx="928" cy="405" r="8" fill="#c77dff"/>
+  <text x="948" y="392" fill="#969eaa" font-family="DejaVu Sans, Arial, sans-serif" font-size="20">Wind</text>
+  <text x="948" y="424" fill="#eceff4" font-family="DejaVu Sans, Arial, sans-serif" font-size="26">0 mph SE</text>
+</svg>
