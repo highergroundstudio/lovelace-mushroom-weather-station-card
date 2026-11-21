@@ -25,6 +25,7 @@ import {
   pm25Meta,
   pressureTrendMeta,
   relativeTime,
+  thresholdCompareValue,
   unitOf,
   uvMeta,
 } from "./helpers";
@@ -59,6 +60,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _forecastUnsub: (() => void) | null = null;
   private _forecastDays: ForecastDay[] = [];
   private _forecastError: string | null = null;
+  private _forecastToken = 0;
   private _renderSignature: string | null = null;
   private _staleTimer: number | null = null;
   private _prevPressure: number | null = null;
@@ -97,6 +99,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER),
     });
     this._forecastSubId = null;
+    this._forecastToken++;
     this._renderSignature = null;
     void this._ensureForecastSub();
     this._render(true);
@@ -113,6 +116,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   }
 
   disconnectedCallback(): void {
+    this._forecastToken++;
     if (this._forecastUnsub) {
       try { this._forecastUnsub(); } catch { /* ignore */ }
       this._forecastUnsub = null;
@@ -164,8 +168,9 @@ class MushroomWeatherStationCard extends HTMLElement {
     return `${fmtNum(c.value, digits)}${unit ? ` ${unit}` : ""}`.trim();
   }
 
-  private _color(key: string, value: number | null, fallback = "grey"): string {
-    return colorFromThresholds(value, mergeThresholds(this._config, key), fallback);
+  private _color(key: string, value: number | null, fallback = "grey", unit = ""): string {
+    const compare = unit ? thresholdCompareValue(value, unit) : value;
+    return colorFromThresholds(compare, mergeThresholds(this._config, key), fallback);
   }
 
   private _sectionVisible(hideKey: keyof CardConfig, states: Array<HassEntity | null>): boolean {
@@ -327,6 +332,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       this._forecastUnsub = null;
     }
     this._forecastSubId = id;
+    const token = ++this._forecastToken;
     this._forecastDays = [];
     this._forecastError = null;
 
@@ -335,8 +341,9 @@ class MushroomWeatherStationCard extends HTMLElement {
 
     try {
       if (this._hass.connection?.subscribeMessage) {
-        this._forecastUnsub = await this._hass.connection.subscribeMessage(
+        const unsub = await this._hass.connection.subscribeMessage(
           (ev) => {
+            if (token !== this._forecastToken) return;
             this._forecastDays = ev?.forecast || [];
             this._forecastError = this._forecastDays.length ? null : "empty";
             this._renderSignature = null;
@@ -344,9 +351,15 @@ class MushroomWeatherStationCard extends HTMLElement {
           },
           { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id },
         );
+        if (token !== this._forecastToken) {
+          try { unsub(); } catch { /* ignore */ }
+          return;
+        }
+        this._forecastUnsub = unsub;
         return;
       }
     } catch {
+      if (token !== this._forecastToken) return;
       /* fall through */
     }
 
@@ -358,10 +371,18 @@ class MushroomWeatherStationCard extends HTMLElement {
         service_data: { type: "daily", entity_id: id },
         return_response: true,
       });
-      this._forecastDays = result?.response?.[id]?.forecast || [];
-      if (!this._forecastDays.length) this._forecastError = "empty";
+      if (token !== this._forecastToken) return;
+      const days = result?.response?.[id]?.forecast || [];
+      // Keep attribute forecast when the connection is missing/empty (demo / offline).
+      if (days.length) {
+        this._forecastDays = days;
+        this._forecastError = null;
+      } else if (!this._forecastDays.length) {
+        this._forecastError = "empty";
+      }
     } catch (err) {
-      this._forecastError = (err as Error)?.message || "failed";
+      if (token !== this._forecastToken) return;
+      if (!this._forecastDays.length) this._forecastError = (err as Error)?.message || "failed";
     }
     this._renderSignature = null;
     this._render(true);
@@ -452,11 +473,11 @@ class MushroomWeatherStationCard extends HTMLElement {
         if (!ctx.showConditions) return "";
         const body = `<div class="grid">
           ${this._tile("temperature", this._label("temperature", "Outdoor"), ctx.temp, ctx.t.value == null ? "—" : `${fmtNum(ctx.t.value, 1)}${ctx.tempUnit.includes("°") ? ctx.tempUnit : "°"}`, "mdi:thermometer", ctx.tColor)}
-          ${this._tile("feels_like", this._label("feels_like", "Feels like"), ctx.feels, ctx.f.value == null ? "—" : `${fmtNum(ctx.f.value, 1)}°`, "mdi:sun-thermometer-outline", this._color("feels_like", ctx.f.raw, ctx.tColor))}
+          ${this._tile("feels_like", this._label("feels_like", "Feels like"), ctx.feels, ctx.f.value == null ? "—" : `${fmtNum(ctx.f.value, 1)}°`, "mdi:sun-thermometer-outline", this._color("feels_like", ctx.f.raw, ctx.tColor, ctx.f.src))}
           ${this._tile("temp_high", this._label("temp_high", "High"), ctx.high, ctx.hi.value == null ? "—" : `${Math.round(ctx.hi.value)}°`, "mdi:thermometer-high", "orange")}
           ${this._tile("temp_low", this._label("temp_low", "Low"), ctx.low, ctx.lo.value == null ? "—" : `${Math.round(ctx.lo.value)}°`, "mdi:thermometer-low", "blue")}
           ${this._tile("humidity", this._label("humidity", "Humidity"), ctx.humidity, ctx.h == null ? "—" : `${Math.round(ctx.h)}${esc(this._unitStr("humidity", ctx.humidity, "%"))}`, "mdi:water-percent", this._color("humidity", ctx.h, "blue"))}
-          ${this._tile("dew_point", this._label("dew_point", "Dew point"), ctx.dew, ctx.d.value == null ? "—" : `${fmtNum(ctx.d.value, 1)}°`, "mdi:molecule", this._color("dew_point", ctx.d.raw, "blue"))}
+          ${this._tile("dew_point", this._label("dew_point", "Dew point"), ctx.dew, ctx.d.value == null ? "—" : `${fmtNum(ctx.d.value, 1)}°`, "mdi:molecule", this._color("dew_point", ctx.d.raw, "blue", ctx.d.src))}
         </div>`;
         return this._wrapSection(id, compact, body);
       }
@@ -465,8 +486,8 @@ class MushroomWeatherStationCard extends HTMLElement {
         const body = `<div class="wind-row">
           ${this._compass(ctx.deg, ctx.card)}
           <div class="grid wind-grid">
-            ${this._tile("wind_speed", this._label("wind_speed", ctx.bf != null ? `Speed · B${ctx.bf}` : "Speed"), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(this._unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ctx.ws.raw, "teal"))}
-            ${this._tile("wind_gust", this._label("wind_gust", "Gust"), ctx.gust, ctx.wg.value == null ? "—" : `${fmtNum(ctx.wg.value, 1)}`, "mdi:windsock", this._color("wind_gust", ctx.wg.raw, "teal"))}
+            ${this._tile("wind_speed", this._label("wind_speed", ctx.bf != null ? `Speed · B${ctx.bf}` : "Speed"), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(this._unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ctx.ws.raw, "teal", ctx.ws.src || "mph"))}
+            ${this._tile("wind_gust", this._label("wind_gust", "Gust"), ctx.gust, ctx.wg.value == null ? "—" : `${fmtNum(ctx.wg.value, 1)}`, "mdi:windsock", this._color("wind_gust", ctx.wg.raw, "teal", ctx.wg.src || "mph"))}
             ${this._tile("max_gust", this._label("max_gust", "Max gust"), ctx.maxGust, num(ctx.maxGust?.state) == null ? "—" : this._fmt("max_gust", ctx.maxGust, 1, "mph"), "mdi:weather-windy-variant", "teal")}
           </div>
         </div>`;
@@ -533,7 +554,7 @@ class MushroomWeatherStationCard extends HTMLElement {
         const body = `<div class="grid">
           ${this._tile("pressure", this._label("pressure", ctx.trend.label ? `Pressure · ${ctx.trend.label}` : "Pressure"), ctx.pressure, this._fmt("pressure", ctx.pressure, 2, unitOf(ctx.pressure) || "inHg"), ctx.trend.icon || "mdi:gauge", ctx.trend.color === "grey" ? "teal" : ctx.trend.color)}
           ${this._tile("pressure_abs", this._label("pressure_abs", "Abs pressure"), ctx.pressureAbs, this._fmt("pressure_abs", ctx.pressureAbs, 2, unitOf(ctx.pressureAbs) || "inHg"), "mdi:gauge", "teal")}
-          ${this._tile("indoor_temperature", this._label("indoor_temperature", "Indoor"), ctx.indoorT, ctx.indoorT ? `${fmtNum(this._conv(ctx.indoorT, "°F").value, 1)}°` : "—", "mdi:home-thermometer", this._color("temperature", num(ctx.indoorT?.state), "green"))}
+          ${this._tile("indoor_temperature", this._label("indoor_temperature", "Indoor"), ctx.indoorT, ctx.indoorT ? `${fmtNum(this._conv(ctx.indoorT, "°F").value, 1)}°` : "—", "mdi:home-thermometer", this._color("temperature", num(ctx.indoorT?.state), "green", this._conv(ctx.indoorT, "°F").src || "°F"))}
           ${this._tile("indoor_humidity", this._label("indoor_humidity", "Indoor RH"), ctx.indoorH, num(ctx.indoorH?.state) == null ? "—" : `${Math.round(num(ctx.indoorH?.state) as number)}%`, "mdi:water-percent", this._color("humidity", num(ctx.indoorH?.state), "cyan"))}
           ${this._tile("co2", this._label("co2", "CO₂"), ctx.co2, num(ctx.co2?.state) == null ? "—" : `${fmtNum(num(ctx.co2?.state), 0)} ${esc(this._unitStr("co2", ctx.co2, "ppm"))}`, "mdi:molecule-co2", this._color("co2", num(ctx.co2?.state), "green"))}
         </div>`;
@@ -623,7 +644,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     const rr = this._conv(rate, unitOf(rate) || "in/h");
     const uvn = num(uv?.state);
     const raining = rr.value != null && rr.value > 0;
-    const tColor = this._color("temperature", t.raw, "grey");
+    const tColor = this._color("temperature", t.raw, "grey", t.src || "°F");
     const uvColor = this._color("uv", uvn, "grey");
     const uvm = uvMeta(uvn, uvColor);
     const pm = num(pm25?.state);

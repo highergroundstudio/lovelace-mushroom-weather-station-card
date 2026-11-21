@@ -95,12 +95,20 @@ const EDITOR_FIELDS = [
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
   { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] }
 ];
+function isPrefixDerived(entityId, key) {
+  const template = PREFIX_MAP[key];
+  if (!template || !entityId) return false;
+  const pattern = `^${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\{p\\}", ".+")}$`;
+  return new RegExp(pattern).test(entityId);
+}
 function applyPrefix(config) {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   if (!prefix) return { ...config };
   const entities = { ...config.entities || {} };
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
-    if (!entities[key]) entities[key] = template.replace("{p}", prefix);
+    const derived = template.replace("{p}", prefix);
+    const current = entities[key];
+    if (!current || isPrefixDerived(current, key)) entities[key] = derived;
   }
   return { ...config, entities };
 }
@@ -131,7 +139,7 @@ function moveSection(order, index, direction) {
   return next;
 }
 function esc(s) {
-  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
 const CARD_VERSION$1 = "0.6.0";
 const CARD_VERSION = customElements.get(CARD_TYPE)?.VERSION || customElements.get(CARD_TYPE)?.constructor?.VERSION || CARD_VERSION$1;
@@ -209,10 +217,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...next.thresholds || {} };
       if (key === "uv_purple_above") {
-        const n = Number(value);
+        const n = value === "" ? NaN : Number(value);
         thresholds.uv = Number.isFinite(n) ? [{ above: n, color: "purple" }] : [];
       } else {
-        const n = Number(value);
+        const n = value === "" ? NaN : Number(value);
         thresholds.temperature = Number.isFinite(n) ? [{ below: n, color: "blue" }] : [];
         thresholds.feels_like = thresholds.temperature;
       }

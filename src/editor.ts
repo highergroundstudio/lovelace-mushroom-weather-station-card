@@ -94,10 +94,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...(next.thresholds || {}) };
       if (key === "uv_purple_above") {
-        const n = Number(value);
+        const n = value === "" ? NaN : Number(value);
         thresholds.uv = Number.isFinite(n) ? [{ above: n, color: "purple" }] : [];
       } else {
-        const n = Number(value);
+        const n = value === "" ? NaN : Number(value);
         thresholds.temperature = Number.isFinite(n) ? [{ below: n, color: "blue" }] : [];
         thresholds.feels_like = thresholds.temperature;
       }
@@ -109,6 +109,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else {
       (next as Record<string, unknown>)[key] = value;
     }
+    // Refresh prefix-derived entity IDs when prefix changes; keep true overrides.
     if (key === "prefix") next.entities = applyPrefix(next).entities;
     this._fire(next);
     void this._render();

@@ -6,19 +6,23 @@ import {
   cardinalToDeg,
   convertValue,
   degToCardinal,
+  esc,
+  mergeThresholds,
   moveSection,
   normalizeSectionOrder,
   parseWindDirection,
   pm25Meta,
   pressureTrendMeta,
+  thresholdCompareValue,
   uvMeta,
 } from "./helpers";
 import { CARD_VERSION } from "./version";
 import { DEFAULT_SECTION_ORDER } from "./const";
+import pkg from "../package.json";
 
 describe("version", () => {
-  it("is 0.6.0", () => {
-    expect(CARD_VERSION).toBe("0.6.0");
+  it("matches package.json", () => {
+    expect(CARD_VERSION).toBe(pkg.version);
   });
 });
 
@@ -40,6 +44,12 @@ describe("units", () => {
     const mph = convertValue(10, "mph", "metric");
     expect(Math.abs((mph.value ?? 0) - 16.0934)).toBeLessThan(0.01);
   });
+
+  it("normalizes threshold compare values to imperial bands", () => {
+    expect(thresholdCompareValue(0, "°C")).toBe(32);
+    expect(Math.abs((thresholdCompareValue(25, "km/h") ?? 0) - 15.534)).toBeLessThan(0.01);
+    expect(thresholdCompareValue(70, "°F")).toBe(70);
+  });
 });
 
 describe("meta helpers", () => {
@@ -56,11 +66,21 @@ describe("meta helpers", () => {
 });
 
 describe("prefix and section order", () => {
-  it("fills prefix entities", () => {
+  it("fills and refreshes prefix entities", () => {
     const cfg = applyPrefix({ prefix: "ws", entities: {} });
     expect(cfg.entities?.temperature).toBe("sensor.ws_temperature");
     expect(cfg.entities?.soil_moisture_2).toBe("sensor.ws_soil_moisture_2");
     expect(cfg.entities?.pm25).toBe("sensor.ws_pm25");
+
+    const renamed = applyPrefix({
+      prefix: "station",
+      entities: {
+        temperature: "sensor.ws_temperature",
+        humidity: "sensor.custom_outside_rh",
+      },
+    });
+    expect(renamed.entities?.temperature).toBe("sensor.station_temperature");
+    expect(renamed.entities?.humidity).toBe("sensor.custom_outside_rh");
   });
 
   it("normalizes and moves section order", () => {
@@ -72,5 +92,23 @@ describe("prefix and section order", () => {
     const moved = moveSection(order, 0, 1);
     expect(moved[0]).toBe("wind");
     expect(moved[1]).toBe("rain");
+  });
+});
+
+describe("thresholds and escaping", () => {
+  it("lets user rules replace matching default color/direction", () => {
+    const merged = mergeThresholds(
+      { thresholds: { uv: [{ above: 10, color: "purple" }] } },
+      "uv",
+    );
+    expect(merged.some((r) => r.above === 8 && r.color === "purple")).toBe(false);
+    expect(merged.some((r) => r.above === 10 && r.color === "purple")).toBe(true);
+    expect(merged.some((r) => r.above === 3 && r.color === "amber")).toBe(true);
+  });
+
+  it("preserves numeric zero in esc", () => {
+    expect(esc(0)).toBe("0");
+    expect(esc(null)).toBe("");
+    expect(esc(undefined)).toBe("");
   });
 });

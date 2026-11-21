@@ -90,12 +90,22 @@ export function beaufort(mph: number | null | undefined): number | null {
   return 12;
 }
 
+function isPrefixDerived(entityId: string, key: string): boolean {
+  const template = PREFIX_MAP[key];
+  if (!template || !entityId) return false;
+  const pattern = `^${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\{p\\}", ".+")}$`;
+  return new RegExp(pattern).test(entityId);
+}
+
 export function applyPrefix(config: CardConfig): CardConfig {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   if (!prefix) return { ...config };
   const entities = { ...(config.entities || {}) };
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
-    if (!entities[key]) entities[key] = template.replace("{p}", prefix);
+    const derived = template.replace("{p}", prefix);
+    const current = entities[key];
+    // Fill empty slots, and refresh previous prefix-derived IDs when prefix changes.
+    if (!current || isPrefixDerived(current, key)) entities[key] = derived;
   }
   return { ...config, entities };
 }
@@ -169,7 +179,16 @@ export function mergeThresholds(config: CardConfig | undefined, key: string): Th
   const extra = config?.thresholds?.[key];
   const base = DEFAULT_THRESHOLDS[key] || [];
   if (!extra || !extra.length) return base;
-  return [...extra, ...base];
+  // User rules replace defaults that share the same color + direction (above/below).
+  const filtered = base.filter((b) => {
+    return !extra.some((e) => {
+      if (!e || e.color !== b.color) return false;
+      if (e.above != null && b.above != null) return true;
+      if (e.below != null && b.below != null) return true;
+      return false;
+    });
+  });
+  return [...extra, ...filtered];
 }
 
 function unitKind(unit: string): string | null {
@@ -265,5 +284,18 @@ export function moveSection(order: SectionId[], index: number, direction: -1 | 1
 }
 
 export function esc(s: unknown): string {
-  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+  return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+}
+
+/** Convert a sensor reading into the unit system used by DEFAULT_THRESHOLDS (°F / mph). */
+export function thresholdCompareValue(raw: number | null, unit: string): number | null {
+  if (raw == null) return null;
+  const kind = unitKind(unit);
+  const from = sourceSystem(unit);
+  if (!kind || !from || from === "imperial") return raw;
+  if (kind === "temp") return raw * (9 / 5) + 32;
+  if (kind === "speed") {
+    return String(unit).toLowerCase().includes("m/s") ? raw * 2.23694 : raw / 1.60934;
+  }
+  return raw;
 }

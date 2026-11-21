@@ -167,11 +167,21 @@
           },
         },
       };
+      const forecast = states["weather.home"].attributes.forecast;
       return {
         states,
         locale: { language: "en" },
         callService() {},
-        connection: null,
+        // Minimal mock so attribute forecasts are not wiped by a null connection.
+        connection: {
+          async subscribeMessage(cb) {
+            queueMicrotask(() => cb({ forecast }));
+            return () => {};
+          },
+          async sendMessagePromise() {
+            return { response: { "weather.home": { forecast } } };
+          },
+        },
       };
     }
 
