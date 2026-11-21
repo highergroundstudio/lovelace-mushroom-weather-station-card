@@ -15,7 +15,7 @@ A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine
 
 One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
 
-Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.5.0**.
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.6.0**.
 
 ## Install with HACS
 
@@ -59,6 +59,17 @@ show_updated: true
 stale_minutes: 30
 show_beaufort: false
 battery_warning_threshold: 20
+section_order:
+  - conditions
+  - rain
+  - wind
+  - sun
+  - soil
+  - lightning
+  - air
+  - station
+  - forecast
+  - battery
 hide_sun: false
 hide_soil: false
 hide_lightning: false
@@ -77,17 +88,22 @@ units:
   rain_today: in
 ```
 
-### New in 0.5.0
+### Section order
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `show_updated` | `true` | Relative last-updated time in the subtitle |
-| `stale_minutes` | `30` | Warn when primary sensors are older than this |
-| `forecast_days` | `5` | Daily forecast cards (1–7), with precip % when available |
-| `show_beaufort` | `false` | Beaufort number on the wind speed tile |
-| Soil / lightning / PM2.5 | auto | Prefix slots + hide toggles in the editor |
+Use `section_order` (or the editor **Order** tab) to rearrange blocks after the hero. Valid ids: `conditions`, `wind`, `rain`, `sun`, `soil`, `lightning`, `air`, `station`, `forecast`, `battery`.
 
-Visual editor tabs: **Layout** · **Entities** · **Display**.
+Visual editor tabs: **Layout** · **Entities** · **Order** · **Display**.
+
+## Develop
+
+```bash
+npm install
+npm test
+npm run build   # writes dist/*.js
+npm run demo    # http://127.0.0.1:8765/demo/
+```
+
+Source lives in `src/`. HACS still ships the built files in `dist/`.
 
 ## Just to be clear
 
