@@ -775,8 +775,15 @@ export function comfortScatterSvg(
   const zoneY = y(band.humidityMax);
   const zoneW = Math.max(4, x(band.tempMax) - zoneX);
   const zoneH = Math.max(4, y(band.humidityMin) - zoneY);
-  const dots = samples
-    .slice(-80)
+  // Uniform sample across the full window (not the newest N) so the plot
+  // matches hours-in-band coverage on dense PWS histories.
+  const plotted = samples.length <= 80
+    ? samples
+    : Array.from({ length: 80 }, (_, i) => {
+      const step = (samples.length - 1) / 79;
+      return samples[Math.round(i * step)];
+    });
+  const dots = plotted
     .map((s) => {
       const inBand =
         s.temp >= band.tempMin

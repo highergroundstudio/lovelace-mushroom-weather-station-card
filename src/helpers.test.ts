@@ -29,6 +29,7 @@ import {
   pressureTrendMeta,
   rainMonthProgress,
   seasonalSkinClasses,
+  comfortScatterSvg,
   storeThresholdValue,
   thresholdCompareValue,
   uvMeta,
@@ -262,6 +263,21 @@ describe("0.8 helpers", () => {
     );
     expect(split.hoursIn).toBeCloseTo(5 / 60, 3);
     expect(split.hoursTotal).toBeCloseTo(0.5, 3);
+
+    // Scatter thins uniformly across the series (keeps the first sample), not just the tail.
+    const denseSamples = Array.from({ length: 200 }, (_, i) => ({
+      temp: i === 0 ? 50 : 70,
+      humidity: 40,
+    }));
+    const svg = comfortScatterSvg(denseSamples, {
+      tempMin: 65,
+      tempMax: 78,
+      humidityMin: 30,
+      humidityMax: 60,
+    });
+    expect((svg.match(/<circle/g) || []).length).toBe(80);
+    // temp 50 → cx ≈ 20.8 on the default scale; tail-only thinning would omit it.
+    expect(svg).toContain('cx="20.8"');
 
     // Unavailable humidity clears validity until a later recovery sample.
     const gap = comfortStats(

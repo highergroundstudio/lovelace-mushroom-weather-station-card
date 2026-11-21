@@ -803,7 +803,11 @@ function comfortScatterSvg(samples, band, width = 220, height = 96) {
   const zoneY = y(band.humidityMax);
   const zoneW = Math.max(4, x(band.tempMax) - zoneX);
   const zoneH = Math.max(4, y(band.humidityMin) - zoneY);
-  const dots = samples.slice(-80).map((s) => {
+  const plotted = samples.length <= 80 ? samples : Array.from({ length: 80 }, (_, i) => {
+    const step = (samples.length - 1) / 79;
+    return samples[Math.round(i * step)];
+  });
+  const dots = plotted.map((s) => {
     const inBand = s.temp >= band.tempMin && s.temp <= band.tempMax && s.humidity >= band.humidityMin && s.humidity <= band.humidityMax;
     return `<circle cx="${x(s.temp).toFixed(1)}" cy="${y(s.humidity).toFixed(1)}" r="2.2" fill="currentColor" opacity="${inBand ? 0.9 : 0.35}"/>`;
   }).join("");
