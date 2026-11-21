@@ -1,4 +1,10 @@
 const CARD_TYPE = "mushroom-weather-station-card";
+const soilMoisture = {};
+const soilTemp = {};
+for (let i = 1; i <= 8; i++) {
+  soilMoisture[`soil_moisture_${i}`] = `sensor.{p}_soil_moisture_${i}`;
+  soilTemp[`soil_temperature_${i}`] = `sensor.{p}_soil_temperature_${i}`;
+}
 const PREFIX_MAP = {
   temperature: "sensor.{p}_temperature",
   feels_like: "sensor.{p}_feels_like",
@@ -26,10 +32,12 @@ const PREFIX_MAP = {
   indoor_humidity: "sensor.{p}_indoor_humidity",
   co2: "sensor.{p}_co2",
   pm25: "sensor.{p}_pm25",
-  soil_moisture_1: "sensor.{p}_soil_moisture_1",
-  soil_moisture_2: "sensor.{p}_soil_moisture_2",
-  soil_moisture_3: "sensor.{p}_soil_moisture_3",
-  soil_moisture_4: "sensor.{p}_soil_moisture_4",
+  aqi: "sensor.{p}_aqi",
+  voc: "sensor.{p}_voc",
+  noise: "sensor.{p}_noise",
+  leaf_wetness: "sensor.{p}_leaf_wetness",
+  ...soilMoisture,
+  ...soilTemp,
   lightning_count: "sensor.{p}_lightning_num",
   lightning_distance: "sensor.{p}_lightning",
   lightning_time: "sensor.{p}_lightning_time",
@@ -51,7 +59,7 @@ const SECTION_LABELS = {
   conditions: "Conditions",
   wind: "Wind",
   rain: "Rain",
-  sun: "Sun",
+  sun: "Sun & moon",
   soil: "Soil",
   lightning: "Lightning",
   air: "Air quality",
@@ -86,10 +94,22 @@ const EDITOR_FIELDS = [
   { key: "indoor_humidity", label: "Indoor humidity", domains: ["sensor"], classes: ["humidity"] },
   { key: "co2", label: "CO₂", domains: ["sensor"], classes: ["carbon_dioxide"] },
   { key: "pm25", label: "PM2.5", domains: ["sensor"], classes: ["pm25"] },
-  { key: "soil_moisture_1", label: "Soil moisture 1", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_2", label: "Soil moisture 2", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_3", label: "Soil moisture 3", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_4", label: "Soil moisture 4", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "aqi", label: "AQI", domains: ["sensor"], classes: ["aqi"] },
+  { key: "voc", label: "VOC", domains: ["sensor"], classes: ["volatile_organic_compounds"] },
+  { key: "noise", label: "Noise", domains: ["sensor"], classes: ["sound_pressure"] },
+  { key: "leaf_wetness", label: "Leaf wetness", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  ...Array.from({ length: 8 }, (_, i) => ({
+    key: `soil_moisture_${i + 1}`,
+    label: `Soil moisture ${i + 1}`,
+    domains: ["sensor"],
+    classes: ["moisture", "humidity"]
+  })),
+  ...Array.from({ length: 8 }, (_, i) => ({
+    key: `soil_temperature_${i + 1}`,
+    label: `Soil temperature ${i + 1}`,
+    domains: ["sensor"],
+    classes: ["temperature"]
+  })),
   { key: "lightning_count", label: "Lightning strikes", domains: ["sensor"], classes: [] },
   { key: "lightning_distance", label: "Lightning distance", domains: ["sensor"], classes: ["distance"] },
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
@@ -149,7 +169,26 @@ function moveSection(order, index, direction) {
 function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
-const CARD_VERSION$1 = "0.6.0";
+function moveSectionTo(order, from, to) {
+  if (from === to || from < 0 || to < 0 || from >= order.length || to >= order.length) return [...order];
+  const next = [...order];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+function thresholdEditorUnit(kind, system) {
+  if (system === "metric") return "°C";
+  return "°F";
+}
+function displayThresholdValue(value, kind, system) {
+  if (system !== "metric") return value;
+  return (value - 32) * (5 / 9);
+}
+function storeThresholdValue(value, kind, system) {
+  if (system !== "metric") return value;
+  return value * (9 / 5) + 32;
+}
+const CARD_VERSION$1 = "0.7.0";
 const CARD_VERSION = customElements.get(CARD_TYPE)?.VERSION || customElements.get(CARD_TYPE)?.constructor?.VERSION || CARD_VERSION$1;
 async function loadHaComponents() {
   if (customElements.get("ha-entity-picker")) return;
@@ -181,6 +220,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     this._loaded = false;
     this._built = false;
     this._tab = "layout";
+    this._dragFrom = null;
   }
   setConfig(config) {
     this._config = { entities: {}, layout: "full", labels: {}, units: {}, ...config };
@@ -204,6 +244,9 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     this._config = next;
     this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: next }, bubbles: true, composed: true }));
   }
+  _unitSystem() {
+    return this._config.unit_system || "native";
+  }
   _setField(key, value, section) {
     const next = {
       ...this._config,
@@ -220,21 +263,24 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (section === "units") {
       if (value) next.units[key] = String(value);
       else delete next.units[key];
-    } else if (key === "show_empty" || key === "show_forecast" || key === "tablet_mode" || key === "show_updated" || key === "show_beaufort" || String(key).startsWith("hide_")) {
+    } else if (key === "show_empty" || key === "show_forecast" || key === "show_hourly_forecast" || key === "show_history_sparklines" || key === "show_wind_rose" || key === "show_alerts" || key === "tablet_mode" || key === "show_updated" || key === "show_beaufort" || String(key).startsWith("hide_")) {
       next[key] = !!value;
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...next.thresholds || {} };
+      const system = this._unitSystem();
       if (key === "uv_purple_above") {
         const n = value === "" ? NaN : Number(value);
         thresholds.uv = Number.isFinite(n) ? [{ above: n, color: "purple" }] : [];
       } else {
-        const n = value === "" ? NaN : Number(value);
-        thresholds.temperature = Number.isFinite(n) ? [{ below: n, color: "blue" }] : [];
+        const displayed = value === "" ? NaN : Number(value);
+        const stored = Number.isFinite(displayed) ? storeThresholdValue(displayed, "temp", system === "native" ? "imperial" : system) : NaN;
+        thresholds.temperature = Number.isFinite(stored) ? [{ below: stored, color: "blue" }] : [];
         thresholds.feels_like = thresholds.temperature;
+        next[key] = Number.isFinite(stored) ? stored : value;
       }
       next.thresholds = thresholds;
-      next[key] = value;
-    } else if (key === "stale_minutes" || key === "forecast_days" || key === "battery_warning_threshold") {
+      if (key === "uv_purple_above") next[key] = value;
+    } else if (key === "stale_minutes" || key === "forecast_days" || key === "hourly_forecast_hours" || key === "history_hours" || key === "battery_warning_threshold" || key === "rain_month_normal") {
       const n = value === "" ? void 0 : Number(value);
       next[key] = Number.isFinite(n) ? n : value;
     } else {
@@ -243,12 +289,6 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     if (key === "prefix") {
       next.entities = applyPrefix(next, this._config.prefix).entities;
     }
-    this._fire(next);
-    void this._render();
-  }
-  _reorder(index, direction) {
-    const order = normalizeSectionOrder(this._config.section_order);
-    const next = { ...this._config, section_order: moveSection(order, index, direction) };
     this._fire(next);
     void this._render();
   }
@@ -267,6 +307,16 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     const pickerReady = !!customElements.get("ha-entity-picker");
     const tab = this._tab || "layout";
     const order = normalizeSectionOrder(c.section_order);
+    const system = this._unitSystem();
+    const tempUnit = thresholdEditorUnit("temp", system === "native" ? "imperial" : system);
+    const storedTempBlue = Number(
+      c.thresholds?.temperature?.find((r) => r.color === "blue" && r.below != null)?.below ?? c.thresholds?.temperature?.find((r) => r.below != null)?.below ?? c.temp_blue_below ?? 32
+    );
+    const displayTempBlue = displayThresholdValue(
+      Number.isFinite(storedTempBlue) ? storedTempBlue : 32,
+      "temp",
+      system === "native" ? "imperial" : system
+    );
     this.shadowRoot.innerHTML = `
       <style>
         .wrap { display: grid; gap: 14px; padding: 4px 0 8px; }
@@ -299,14 +349,19 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         .order-list { display: grid; gap: 6px; }
         .order-row {
           display: grid;
-          grid-template-columns: 1fr auto auto;
+          grid-template-columns: 28px 1fr auto auto;
           gap: 8px;
           align-items: center;
-          padding: 8px 10px;
+          padding: 10px 12px;
           border: 1px solid var(--divider-color);
           border-radius: 10px;
           background: var(--secondary-background-color, rgba(0,0,0,0.04));
+          cursor: grab;
+          user-select: none;
         }
+        .order-row.dragging { opacity: 0.45; }
+        .order-row.drag-over { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px var(--primary-color); }
+        .order-row .handle { color: var(--secondary-text-color); font-size: 16px; letter-spacing: -1px; }
         .order-row .name { font-size: 13px; font-weight: 600; }
         .order-row button {
           border: 1px solid var(--divider-color);
@@ -350,7 +405,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <select data-key="layout">
               <option value="full" ${c.layout === "full" || !c.layout ? "selected" : ""}>Full station</option>
               <option value="compact" ${c.layout === "compact" ? "selected" : ""}>Compact</option>
-              <option value="chips" ${c.layout === "chips" ? "selected" : ""}>Chips strip</option>
+              <option value="chips" ${c.layout === "chips" ? "selected" : ""}>Chips glance bar</option>
             </select>
           </label>
         </div>
@@ -369,11 +424,25 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
           <label class="field">Forecast days
             <input data-key="forecast_days" type="number" min="1" max="7" value="${esc(c.forecast_days ?? "5")}" placeholder="5" />
           </label>
+          <label class="field">Hourly hours
+            <input data-key="hourly_forecast_hours" type="number" min="6" max="24" value="${esc(c.hourly_forecast_hours ?? "24")}" placeholder="24" />
+          </label>
+        </div>
+        <div class="row">
           <label class="field">Stale after (minutes)
             <input data-key="stale_minutes" type="number" min="0" value="${esc(c.stale_minutes ?? "30")}" placeholder="30" />
           </label>
+          <label class="field">History window (hours)
+            <input data-key="history_hours" type="number" min="6" max="48" value="${esc(c.history_hours ?? "24")}" placeholder="24" />
+          </label>
         </div>
+        <label class="field">Rain month normal
+          <input data-key="rain_month_normal" type="number" min="0" step="0.01" value="${esc(c.rain_month_normal ?? "")}" placeholder="e.g. 2.5" />
+        </label>
         <div id="weather-picker"></div>
+        <div id="alert-picker"></div>
+        <div id="sun-picker"></div>
+        <div id="moon-picker"></div>
         <h3>Sections</h3>
         <p class="help">Off = show the section when it has data. On = hide it even if sensors exist.</p>
         <div id="section-switches" class="switch-list"></div>
@@ -388,18 +457,19 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <input data-key="uv_purple_above" type="number" value="${esc(c.uv_purple_above ?? "8")}" placeholder="8" />
           </label>
         </div>
-        <label class="field">Temperature blue at / below
-          <input data-key="temp_blue_below" type="number" value="${esc(c.temp_blue_below ?? "32")}" placeholder="32" />
+        <label class="field">Temperature blue at / below (${esc(tempUnit)})
+          <input data-key="temp_blue_below" type="number" value="${esc(Number(displayTempBlue.toFixed(1)))}" placeholder="${tempUnit === "°C" ? "0" : "32"}" />
         </label>
-        <p class="help">Per-slot labels and units are under Entities. Advanced <code>thresholds</code> and <code>actions</code> stay in YAML.</p>
+        <p class="help">Threshold cutoffs follow the selected unit system (${esc(system)}). Stored rules stay compatible with imperial defaults. Per-slot labels and units are under Entities.</p>
       `;
     } else if (tab === "order") {
       body.innerHTML = `
-        <p class="help">Drag-free reorder: move sections up or down. Hidden sections stay in place but do not render.</p>
+        <p class="help">Drag sections to reorder, or use ↑ / ↓. Hidden sections stay listed but do not render.</p>
         <div class="order-list" id="order-list">
           ${order.map(
         (id, index) => `
-            <div class="order-row" data-index="${index}">
+            <div class="order-row" draggable="true" data-index="${index}">
+              <div class="handle" aria-hidden="true">⠿</div>
               <div class="name">${index + 1}. ${esc(SECTION_LABELS[id])}</div>
               <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
               <button type="button" data-move="down" data-index="${index}" ${index === order.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
@@ -408,11 +478,39 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         </div>
         <button type="button" id="reset-order" style="margin-top:8px;border:1px solid var(--divider-color);background:transparent;color:var(--primary-text-color);border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;">Reset to default order</button>
       `;
+      const rows = [...body.querySelectorAll(".order-row")];
+      rows.forEach((row) => {
+        row.addEventListener("dragstart", () => {
+          this._dragFrom = Number(row.dataset.index);
+          row.classList.add("dragging");
+        });
+        row.addEventListener("dragend", () => {
+          this._dragFrom = null;
+          rows.forEach((r) => r.classList.remove("dragging", "drag-over"));
+        });
+        row.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          row.classList.add("drag-over");
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+        row.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          row.classList.remove("drag-over");
+          const to = Number(row.dataset.index);
+          const from = this._dragFrom;
+          if (from == null || Number.isNaN(to) || from === to) return;
+          const nextOrder = moveSectionTo(order, from, to);
+          this._fire({ ...this._config, section_order: nextOrder });
+          void this._render();
+        });
+      });
       body.querySelectorAll("[data-move]").forEach((btn) => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
           const index = Number(btn.dataset.index);
           const dir = btn.dataset.move === "up" ? -1 : 1;
-          this._reorder(index, dir);
+          this._fire({ ...this._config, section_order: moveSection(order, index, dir) });
+          void this._render();
         });
       });
       body.querySelector("#reset-order")?.addEventListener("click", () => {
@@ -433,37 +531,31 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       this._fillSwitches("options-switches", [
         { key: "tablet_mode", title: "Tablet mode", help: "Tap does nothing. Hold a tile for more-info." },
         { key: "show_empty", title: "Show empty tiles", help: "Keep tiles visible when the entity is missing." },
-        { key: "show_forecast", title: "Show forecast row", help: "Needs a weather entity below." },
+        { key: "show_forecast", title: "Show daily forecast", help: "Needs a weather entity below." },
+        { key: "show_hourly_forecast", title: "Show hourly forecast", help: "12–24h strip with precip % and temp." },
+        { key: "show_history_sparklines", title: "History sparklines", help: "Mini charts on temp, humidity, wind, pressure." },
+        { key: "show_wind_rose", title: "Wind rose", help: "Direction distribution from history." },
+        { key: "show_alerts", title: "Weather alerts banner", help: "From weather attributes or alert entity." },
         { key: "show_updated", title: "Show last updated", help: "Status chip with relative update time." },
         { key: "show_beaufort", title: "Show Beaufort scale", help: "Add Beaufort number on the wind speed tile." }
       ]);
       this._fillSwitches("section-switches", [
         { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
-        { key: "hide_wind", title: "Hide wind", help: "Compass, speed, gust, max gust" },
-        { key: "hide_rain", title: "Hide rain", help: "Sparkline and rain totals" },
-        { key: "hide_sun", title: "Hide sun", help: "UV, solar, light" },
-        { key: "hide_soil", title: "Hide soil", help: "Soil moisture channels 1–4" },
+        { key: "hide_wind", title: "Hide wind", help: "Compass, rose, speed, gust, max gust" },
+        { key: "hide_rain", title: "Hide rain", help: "Goals, sparkline, and rain totals" },
+        { key: "hide_sun", title: "Hide sun & moon", help: "UV, solar, light, sunrise/sunset, moon" },
+        { key: "hide_soil", title: "Hide soil", help: "Moisture/temp channels 1–8 and leaf wetness" },
         { key: "hide_lightning", title: "Hide lightning", help: "Strike count, distance, last strike" },
-        { key: "hide_air", title: "Hide air quality", help: "PM2.5 tile" },
+        { key: "hide_air", title: "Hide air quality", help: "PM2.5, AQI, VOC, noise" },
         { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
         { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" }
       ]);
     }
     if (tab === "layout" && pickerReady && this._hass) {
-      const host2 = this.shadowRoot.getElementById("weather-picker");
-      if (host2) {
-        const picker = document.createElement("ha-entity-picker");
-        picker.hass = this._hass;
-        picker.label = "Forecast weather entity";
-        picker.value = c.weather_entity || "";
-        picker.allowCustomEntity = true;
-        picker.includeDomains = ["weather"];
-        picker.addEventListener("value-changed", (ev) => {
-          ev.stopPropagation();
-          this._setField("weather_entity", ev.detail?.value || "");
-        });
-        host2.appendChild(picker);
-      }
+      this._mountPicker("weather-picker", "Forecast weather entity", c.weather_entity || "", ["weather"], "weather_entity");
+      this._mountPicker("alert-picker", "Alert entity (optional)", c.alert_entity || "", ["sensor", "binary_sensor", "event"], "alert_entity");
+      this._mountPicker("sun-picker", "Sun entity", c.sun_entity || "sun.sun", ["sun"], "sun_entity");
+      this._mountPicker("moon-picker", "Moon entity (optional)", c.moon_entity || "", ["sensor"], "moon_entity");
     }
     if (tab !== "entities" || !pickerReady || !this._hass) {
       this._built = true;
@@ -509,6 +601,21 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     });
     this._built = true;
   }
+  _mountPicker(hostId, label, value, domains, key) {
+    const host = this.shadowRoot.getElementById(hostId);
+    if (!host || !this._hass) return;
+    const picker = document.createElement("ha-entity-picker");
+    picker.hass = this._hass;
+    picker.label = label;
+    picker.value = value;
+    picker.allowCustomEntity = true;
+    picker.includeDomains = domains;
+    picker.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      this._setField(key, ev.detail?.value || "");
+    });
+    host.appendChild(picker);
+  }
   _fillSwitches(hostId, items) {
     const host = this.shadowRoot.getElementById(hostId);
     if (!host) return;
@@ -527,8 +634,18 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         sw.style.height = "20px";
         sw.style.flexShrink = "0";
       }
-      if (item.key === "show_updated") {
-        sw.checked = this._config.show_updated !== false;
+      const defaultsOn = /* @__PURE__ */ new Set([
+        "show_updated",
+        "show_history_sparklines",
+        "show_wind_rose",
+        "show_alerts"
+      ]);
+      if (item.key === "show_hourly_forecast") {
+        const raw = this._config.show_hourly_forecast;
+        sw.checked = raw === false ? false : raw === true ? true : !!this._config.weather_entity;
+      } else if (defaultsOn.has(item.key)) {
+        const raw = this._config[item.key];
+        sw.checked = raw !== false;
       } else {
         sw.checked = !!this._config[item.key];
       }

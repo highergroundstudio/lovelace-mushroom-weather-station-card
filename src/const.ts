@@ -3,6 +3,13 @@ import type { SectionId, ThresholdRule } from "./types";
 export const CARD_TYPE = "mushroom-weather-station-card";
 export const CARD_NAME = "Mushroom Weather Station Card";
 
+const soilMoisture: Record<string, string> = {};
+const soilTemp: Record<string, string> = {};
+for (let i = 1; i <= 8; i++) {
+  soilMoisture[`soil_moisture_${i}`] = `sensor.{p}_soil_moisture_${i}`;
+  soilTemp[`soil_temperature_${i}`] = `sensor.{p}_soil_temperature_${i}`;
+}
+
 export const PREFIX_MAP: Record<string, string> = {
   temperature: "sensor.{p}_temperature",
   feels_like: "sensor.{p}_feels_like",
@@ -30,10 +37,12 @@ export const PREFIX_MAP: Record<string, string> = {
   indoor_humidity: "sensor.{p}_indoor_humidity",
   co2: "sensor.{p}_co2",
   pm25: "sensor.{p}_pm25",
-  soil_moisture_1: "sensor.{p}_soil_moisture_1",
-  soil_moisture_2: "sensor.{p}_soil_moisture_2",
-  soil_moisture_3: "sensor.{p}_soil_moisture_3",
-  soil_moisture_4: "sensor.{p}_soil_moisture_4",
+  aqi: "sensor.{p}_aqi",
+  voc: "sensor.{p}_voc",
+  noise: "sensor.{p}_noise",
+  leaf_wetness: "sensor.{p}_leaf_wetness",
+  ...soilMoisture,
+  ...soilTemp,
   lightning_count: "sensor.{p}_lightning_num",
   lightning_distance: "sensor.{p}_lightning",
   lightning_time: "sensor.{p}_lightning_time",
@@ -44,6 +53,8 @@ export const CARDINALS = [
   "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
   "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
 ] as const;
+
+export const WIND_ROSE_LABELS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 
 export const DEFAULT_SECTION_ORDER: SectionId[] = [
   "conditions",
@@ -62,7 +73,7 @@ export const SECTION_LABELS: Record<SectionId, string> = {
   conditions: "Conditions",
   wind: "Wind",
   rain: "Rain",
-  sun: "Sun",
+  sun: "Sun & moon",
   soil: "Soil",
   lightning: "Lightning",
   air: "Air quality",
@@ -101,10 +112,18 @@ export const DEFAULT_THRESHOLDS: Record<string, ThresholdRule[]> = {
   wind_gust: [{ above: 25, color: "orange" }],
   co2: [{ above: 1200, color: "red" }, { above: 800, color: "orange" }, { below: 800, color: "green" }],
   pm25: [{ above: 55, color: "red" }, { above: 35, color: "orange" }, { above: 12, color: "amber" }, { below: 12, color: "green" }],
+  aqi: [{ above: 150, color: "red" }, { above: 100, color: "orange" }, { above: 50, color: "amber" }, { below: 50, color: "green" }],
+  voc: [{ above: 1000, color: "red" }, { above: 500, color: "orange" }, { below: 500, color: "green" }],
+  noise: [{ above: 70, color: "orange" }, { above: 55, color: "amber" }, { below: 55, color: "green" }],
+  leaf_wetness: [{ above: 70, color: "blue" }, { above: 30, color: "cyan" }, { below: 30, color: "grey" }],
   soil_moisture_1: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
   soil_moisture_2: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
   soil_moisture_3: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
   soil_moisture_4: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_5: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_6: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_7: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_8: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
 };
 
 export const COLOR_VARS: Record<string, string> = {
@@ -137,6 +156,30 @@ export const WEATHER_ICONS: Record<string, string> = {
   "windy-variant": "mdi:weather-windy-variant",
 };
 
+export const MOON_ICONS: Record<string, string> = {
+  new_moon: "mdi:moon-new",
+  new: "mdi:moon-new",
+  waxing_crescent: "mdi:moon-waxing-crescent",
+  first_quarter: "mdi:moon-first-quarter",
+  waxing_gibbous: "mdi:moon-waxing-gibbous",
+  full_moon: "mdi:moon-full",
+  full: "mdi:moon-full",
+  waning_gibbous: "mdi:moon-waning-gibbous",
+  last_quarter: "mdi:moon-last-quarter",
+  third_quarter: "mdi:moon-last-quarter",
+  waning_crescent: "mdi:moon-waning-crescent",
+};
+
+export const ALERT_SEVERITY_COLOR: Record<string, string> = {
+  extreme: "red",
+  severe: "orange",
+  moderate: "amber",
+  minor: "blue",
+  unknown: "grey",
+};
+
+export const HISTORY_SPARK_KEYS = ["temperature", "humidity", "wind_speed", "pressure"] as const;
+
 export const EDITOR_FIELDS = [
   { key: "temperature", label: "Temperature", domains: ["sensor"], classes: ["temperature"] },
   { key: "feels_like", label: "Feels like", domains: ["sensor"], classes: ["temperature"] },
@@ -164,10 +207,22 @@ export const EDITOR_FIELDS = [
   { key: "indoor_humidity", label: "Indoor humidity", domains: ["sensor"], classes: ["humidity"] },
   { key: "co2", label: "CO₂", domains: ["sensor"], classes: ["carbon_dioxide"] },
   { key: "pm25", label: "PM2.5", domains: ["sensor"], classes: ["pm25"] },
-  { key: "soil_moisture_1", label: "Soil moisture 1", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_2", label: "Soil moisture 2", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_3", label: "Soil moisture 3", domains: ["sensor"], classes: ["moisture", "humidity"] },
-  { key: "soil_moisture_4", label: "Soil moisture 4", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "aqi", label: "AQI", domains: ["sensor"], classes: ["aqi"] },
+  { key: "voc", label: "VOC", domains: ["sensor"], classes: ["volatile_organic_compounds"] },
+  { key: "noise", label: "Noise", domains: ["sensor"], classes: ["sound_pressure"] },
+  { key: "leaf_wetness", label: "Leaf wetness", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  ...Array.from({ length: 8 }, (_, i) => ({
+    key: `soil_moisture_${i + 1}`,
+    label: `Soil moisture ${i + 1}`,
+    domains: ["sensor"] as string[],
+    classes: ["moisture", "humidity"],
+  })),
+  ...Array.from({ length: 8 }, (_, i) => ({
+    key: `soil_temperature_${i + 1}`,
+    label: `Soil temperature ${i + 1}`,
+    domains: ["sensor"] as string[],
+    classes: ["temperature"],
+  })),
   { key: "lightning_count", label: "Lightning strikes", domains: ["sensor"], classes: [] as string[] },
   { key: "lightning_distance", label: "Lightning distance", domains: ["sensor"], classes: ["distance"] },
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },

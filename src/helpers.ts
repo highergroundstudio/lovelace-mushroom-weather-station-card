@@ -1,5 +1,24 @@
-import { CARDINALS, COLOR_VARS, DEFAULT_SECTION_ORDER, DEFAULT_THRESHOLDS, PREFIX_MAP } from "./const";
-import type { CardConfig, HassEntity, HomeAssistant, SectionId, ThresholdRule } from "./types";
+import {
+  ALERT_SEVERITY_COLOR,
+  CARDINALS,
+  COLOR_VARS,
+  DEFAULT_SECTION_ORDER,
+  DEFAULT_THRESHOLDS,
+  MOON_ICONS,
+  PREFIX_MAP,
+  WIND_ROSE_LABELS,
+} from "./const";
+import type {
+  CardConfig,
+  HassEntity,
+  HistoryPoint,
+  HomeAssistant,
+  SectionId,
+  ThresholdRule,
+  UnitSystem,
+  WeatherAlert,
+  WindRoseBin,
+} from "./types";
 
 export function degToCardinal(deg: number): string | null {
   const n = Number(deg);
@@ -310,4 +329,182 @@ export function thresholdCompareValue(raw: number | null, unit: string): number 
     return String(unit).toLowerCase().includes("m/s") ? raw * 2.23694 : raw / 1.60934;
   }
   return raw;
+}
+
+export function moveSectionTo(order: SectionId[], from: number, to: number): SectionId[] {
+  if (from === to || from < 0 || to < 0 || from >= order.length || to >= order.length) return [...order];
+  const next = [...order];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+export function aqiMeta(value: number | null, color?: string): { label: string; color: string } {
+  if (value == null) return { label: "AQI", color: color || "grey" };
+  if (value >= 150) return { label: "Unhealthy", color: color || "red" };
+  if (value >= 100) return { label: "Sensitive", color: color || "orange" };
+  if (value >= 50) return { label: "Moderate", color: color || "amber" };
+  return { label: "Good", color: color || "green" };
+}
+
+export function moonMeta(state: string | undefined): { label: string; icon: string } {
+  const raw = String(state || "").trim().toLowerCase().replace(/\s+/g, "_");
+  const icon = MOON_ICONS[raw] || "mdi:moon-waning-crescent";
+  const label = raw
+    ? raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
+    : "Moon";
+  return { label, icon };
+}
+
+export function daysSinceTimestamp(raw: string | undefined): number | null {
+  if (!raw || raw === "unknown" || raw === "unavailable") return null;
+  const t = new Date(raw).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, (Date.now() - t) / 86400000);
+}
+
+export function rainMonthProgress(monthValue: number | null, normal: number | null): {
+  pct: number | null;
+  label: string;
+} {
+  if (monthValue == null || normal == null || normal <= 0) return { pct: null, label: "" };
+  const pct = Math.min(999, Math.round((monthValue / normal) * 100));
+  return { pct, label: `${pct}% of normal` };
+}
+
+export function alertSeverityColor(severity: string | undefined): string {
+  const key = String(severity || "unknown").toLowerCase();
+  return ALERT_SEVERITY_COLOR[key] || ALERT_SEVERITY_COLOR.unknown;
+}
+
+export function collectAlerts(
+  weather: HassEntity | null | undefined,
+  alertEntity: HassEntity | null | undefined,
+): WeatherAlert[] {
+  const out: WeatherAlert[] = [];
+  const fromWeather = weather?.attributes?.alerts;
+  if (Array.isArray(fromWeather)) {
+    for (const a of fromWeather) {
+      if (a && (a.title || a.event || a.description)) out.push(a);
+    }
+  }
+  if (alertEntity && available(alertEntity)) {
+    const state = String(alertEntity.state || "");
+    const attrs = alertEntity.attributes || {};
+    const active = state !== "off" && state !== "unavailable" && state !== "unknown" && state !== "none";
+    if (active) {
+      out.push({
+        title: String(attrs.friendly_name || attrs.event || state),
+        event: String(attrs.event || state),
+        description: String(attrs.description || attrs.message || ""),
+        severity: String(attrs.severity || (state === "on" ? "moderate" : state)),
+        sender: String(attrs.attribution || attrs.sender || ""),
+      });
+    }
+  }
+  return out;
+}
+
+export function historyLineSpark(points: HistoryPoint[], width = 64, height = 22): string {
+  if (!points.length) return "";
+  const vals = points.map((p) => p.state).filter((v) => Number.isFinite(v));
+  if (!vals.length) return "";
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = Math.max(0.01, max - min);
+  const step = points.length === 1 ? width : width / (points.length - 1);
+  const coords = points
+    .map((p, i) => {
+      const x = i * step;
+      const y = height - ((p.state - min) / span) * (height - 2) - 1;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return `<svg class="hist-spark" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" points="${coords}"/></svg>`;
+}
+
+export function windRoseBins(degrees: number[]): WindRoseBin[] {
+  const counts = new Array(WIND_ROSE_LABELS.length).fill(0) as number[];
+  for (const deg of degrees) {
+    if (!Number.isFinite(deg)) continue;
+    const idx = Math.round((((deg % 360) + 360) % 360) / 45) % WIND_ROSE_LABELS.length;
+    counts[idx]++;
+  }
+  const total = counts.reduce((a, b) => a + b, 0) || 1;
+  return WIND_ROSE_LABELS.map((label, i) => ({
+    label,
+    deg: i * 45,
+    count: counts[i],
+    share: counts[i] / total,
+  }));
+}
+
+export function windRoseSvg(bins: WindRoseBin[], size = 96): string {
+  const cx = size / 2;
+  const cy = size / 2;
+  const maxR = size * 0.4;
+  const maxShare = Math.max(...bins.map((b) => b.share), 0.01);
+  const petals = bins
+    .filter((b) => b.count > 0)
+    .map((b) => {
+      const r = Math.max(10, (b.share / maxShare) * maxR);
+      const rad = ((b.deg - 90) * Math.PI) / 180;
+      const x = cx + Math.cos(rad) * r;
+      const y = cy + Math.sin(rad) * r;
+      const opacity = 0.45 + (b.share / maxShare) * 0.55;
+      return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="currentColor" stroke-width="7" stroke-linecap="round" opacity="${opacity.toFixed(2)}"/>`;
+    })
+    .join("");
+  return `<svg class="wind-rose-svg" viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" aria-hidden="true">
+    <circle cx="${cx}" cy="${cy}" r="${maxR}" fill="none" stroke="currentColor" stroke-opacity="0.16"/>
+    <circle cx="${cx}" cy="${cy}" r="${maxR * 0.5}" fill="none" stroke="currentColor" stroke-opacity="0.1"/>
+    ${petals}
+    <circle cx="${cx}" cy="${cy}" r="2.5" fill="currentColor"/>
+    <text x="${cx}" y="12" text-anchor="middle" font-size="9" fill="currentColor">N</text>
+  </svg>`;
+}
+
+/** Threshold editor helpers — defaults are stored as imperial (°F / mph). */
+export function thresholdEditorUnit(kind: "temp" | "speed", system: UnitSystem | undefined): string {
+  if (system === "metric") return kind === "temp" ? "°C" : "km/h";
+  return kind === "temp" ? "°F" : "mph";
+}
+
+export function displayThresholdValue(
+  value: number,
+  kind: "temp" | "speed",
+  system: UnitSystem | undefined,
+): number {
+  if (system !== "metric") return value;
+  return kind === "temp" ? (value - 32) * (5 / 9) : value * 1.60934;
+}
+
+export function storeThresholdValue(
+  value: number,
+  kind: "temp" | "speed",
+  system: UnitSystem | undefined,
+): number {
+  if (system !== "metric") return value;
+  return kind === "temp" ? value * (9 / 5) + 32 : value / 1.60934;
+}
+
+export function formatSunTime(iso: string | undefined, locale?: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  try {
+    return d.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
+  } catch {
+    return d.toLocaleTimeString();
+  }
+}
+
+export function downsampleHistory(points: HistoryPoint[], maxPoints = 36): HistoryPoint[] {
+  if (points.length <= maxPoints) return points;
+  const out: HistoryPoint[] = [];
+  const step = (points.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(points[Math.round(i * step)]);
+  }
+  return out;
 }

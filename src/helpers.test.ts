@@ -1,20 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
+  aqiMeta,
   applyPrefix,
   batteryInfo,
   beaufort,
   cardinalToDeg,
+  collectAlerts,
   convertValue,
+  daysSinceTimestamp,
   degToCardinal,
+  displayThresholdValue,
   esc,
+  historyLineSpark,
   mergeThresholds,
+  moonMeta,
   moveSection,
+  moveSectionTo,
   normalizeSectionOrder,
   parseWindDirection,
   pm25Meta,
   pressureTrendMeta,
+  rainMonthProgress,
+  storeThresholdValue,
   thresholdCompareValue,
   uvMeta,
+  windRoseBins,
 } from "./helpers";
 import { CARD_VERSION } from "./version";
 import { DEFAULT_SECTION_ORDER } from "./const";
@@ -122,6 +132,34 @@ describe("prefix and section order", () => {
     const moved = moveSection(order, 0, 1);
     expect(moved[0]).toBe("wind");
     expect(moved[1]).toBe("rain");
+    const dragged = moveSectionTo(order, 0, 2);
+    expect(dragged[2]).toBe("rain");
+  });
+});
+
+describe("0.7 helpers", () => {
+  it("formats moon, rain goals, alerts, sparklines, and threshold units", () => {
+    expect(moonMeta("waning_gibbous").icon).toBe("mdi:moon-waning-gibbous");
+    expect(aqiMeta(40).label).toBe("Good");
+    expect(rainMonthProgress(1.2, 2.4).pct).toBe(50);
+    expect(daysSinceTimestamp(new Date(Date.now() - 2.5 * 86400000).toISOString())).toBeGreaterThan(2);
+    const alerts = collectAlerts(
+      {
+        entity_id: "weather.home",
+        state: "rainy",
+        attributes: { alerts: [{ title: "Flood Watch", severity: "moderate", description: "Rising creeks" }] },
+      },
+      null,
+    );
+    expect(alerts[0]?.title).toBe("Flood Watch");
+    expect(historyLineSpark([{ state: 1, last_changed: 1 }, { state: 3, last_changed: 2 }])).toContain("polyline");
+    expect(windRoseBins([0, 10, 180, 185]).find((b) => b.label === "N")?.count).toBe(2);
+    expect(Math.round(displayThresholdValue(32, "temp", "metric"))).toBe(0);
+    expect(Math.round(storeThresholdValue(0, "temp", "metric"))).toBe(32);
+    // Round-trip with a nonzero Celsius threshold (0°C/32°F is too easy).
+    const stored = storeThresholdValue(12.5, "temp", "metric");
+    expect(stored).toBeCloseTo(54.5, 5);
+    expect(displayThresholdValue(stored, "temp", "metric")).toBeCloseTo(12.5, 5);
   });
 });
 

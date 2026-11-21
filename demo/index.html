@@ -6,6 +6,8 @@
   <title>Mushroom Weather Station Card · Demo</title>
   <style>
     :root {
+      --primary-color: #4fc3f7;
+      --accent-color: #26c6da;
       --primary-text-color: #e8eaed;
       --secondary-text-color: #9aa0a6;
       --card-background-color: #1e2228;
@@ -15,6 +17,7 @@
       --warning-color: #f9ab00;
       --error-color: #f28b82;
       --success-color: #81c995;
+      --info-color: #64b5f6;
       --cyan-color: #4dd0e1;
       --teal-color: #26a69a;
       --blue-color: #64b5f6;
@@ -40,21 +43,15 @@
       display: grid;
       gap: 20px;
       grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      max-width: 1200px;
+      max-width: 1280px;
     }
-    ha-card, mushroom-weather-station-card {
-      display: block;
-    }
+    ha-card, mushroom-weather-station-card { display: block; }
     ha-icon {
       display: inline-block;
       width: 22px;
       height: 22px;
-      background: currentColor;
-      -webkit-mask: var(--icon-mask) center / contain no-repeat;
-      mask: var(--icon-mask) center / contain no-repeat;
-      opacity: 0.9;
+      background: transparent;
     }
-    /* Simple glyph fallbacks via CSS content when mask unavailable */
     ha-icon::before {
       content: "●";
       font-size: 14px;
@@ -62,26 +59,19 @@
       display: block;
       text-align: center;
       color: inherit;
-      background: transparent;
-    }
-    ha-icon {
-      background: transparent;
-      -webkit-mask: none;
-      mask: none;
     }
   </style>
 </head>
 <body>
-  <h1>Mushroom Weather Station Card · v0.6.0 demo</h1>
-  <p>Mock Home Assistant states — polished layout, custom section order (rain before wind), soil/lightning/PM2.5, forecast precip %, stale chip.</p>
+  <h1>Mushroom Weather Station Card · v0.7.0 demo</h1>
+  <p>Hourly forecast, alerts, history sparklines, wind rose, rain goals, sun/moon, expanded sensors, chip glance bar.</p>
   <div class="grid">
     <div id="full"></div>
-    <div id="stale"></div>
+    <div id="chips"></div>
     <div id="compact"></div>
   </div>
 
   <script type="module">
-    // Minimal ha-card / ha-icon stand-ins for offline demo
     if (!customElements.get("ha-card")) {
       customElements.define("ha-card", class extends HTMLElement {});
     }
@@ -96,7 +86,6 @@
 
     const now = Date.now();
     const fresh = new Date(now - 2 * 60 * 1000).toISOString();
-    const stale = new Date(now - 90 * 60 * 1000).toISOString();
 
     function sensor(id, state, attrs = {}, updated = fresh) {
       return {
@@ -108,78 +97,147 @@
       };
     }
 
-    function buildHass(updated = fresh) {
+    function histSeries(base, wobble = 1) {
+      const out = [];
+      for (let i = 24; i >= 0; i--) {
+        out.push({
+          s: String(base + Math.sin(i / 3) * wobble),
+          lu: (now - i * 3600 * 1000) / 1000,
+        });
+      }
+      return out;
+    }
+
+    function buildHass() {
+      const daily = [
+        { datetime: new Date(now).toISOString(), condition: "sunny", temperature: 78, templow: 58, precipitation_probability: 10 },
+        { datetime: new Date(now + 86400000).toISOString(), condition: "rainy", temperature: 70, templow: 55, precipitation_probability: 70 },
+        { datetime: new Date(now + 2 * 86400000).toISOString(), condition: "cloudy", temperature: 68, templow: 52, precipitation_probability: 40 },
+        { datetime: new Date(now + 3 * 86400000).toISOString(), condition: "partlycloudy", temperature: 73, templow: 54, precipitation_probability: 20 },
+        { datetime: new Date(now + 4 * 86400000).toISOString(), condition: "sunny", temperature: 76, templow: 56, precipitation_probability: 5 },
+      ];
+      const hourly = Array.from({ length: 24 }, (_, i) => ({
+        datetime: new Date(now + i * 3600 * 1000).toISOString(),
+        condition: i % 5 === 0 ? "rainy" : i % 3 === 0 ? "partlycloudy" : "sunny",
+        temperature: 68 + Math.round(Math.sin(i / 3) * 6),
+        precipitation_probability: i % 5 === 0 ? 60 : 10 + (i % 4) * 5,
+      }));
+      const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+      const dirHist = Array.from({ length: 24 }, (_, i) => ({
+        s: dirs[i % dirs.length],
+        lu: (now - i * 3600 * 1000) / 1000,
+      }));
+
       const states = {
-        "sensor.ws_temperature": sensor("sensor.ws_temperature", 71.2, { unit_of_measurement: "°F", device_class: "temperature" }, updated),
-        "sensor.ws_feels_like": sensor("sensor.ws_feels_like", 71.0, { unit_of_measurement: "°F" }, updated),
-        "sensor.ws_humidity": sensor("sensor.ws_humidity", 46, { unit_of_measurement: "%" }, updated),
-        "sensor.ws_dew_point": sensor("sensor.ws_dew_point", 49.1, { unit_of_measurement: "°F" }, updated),
-        "sensor.ws_temp_max": sensor("sensor.ws_temp_max", 78, { unit_of_measurement: "°F" }, updated),
-        "sensor.ws_temp_min": sensor("sensor.ws_temp_min", 58, { unit_of_measurement: "°F" }, updated),
-        "sensor.ws_wind_speed": sensor("sensor.ws_wind_speed", 6.4, { unit_of_measurement: "mph" }, updated),
-        "sensor.ws_wind_gust": sensor("sensor.ws_wind_gust", 11.2, { unit_of_measurement: "mph" }, updated),
-        "sensor.ws_max_gust": sensor("sensor.ws_max_gust", 18.0, { unit_of_measurement: "mph" }, updated),
-        "sensor.ws_wind_direction": sensor("sensor.ws_wind_direction", "SE", {}, updated),
-        "sensor.ws_precipitation_intensity": sensor("sensor.ws_precipitation_intensity", 0, { unit_of_measurement: "in/h" }, updated),
-        "sensor.ws_daily_rain": sensor("sensor.ws_daily_rain", 0.24, { unit_of_measurement: "in" }, updated),
-        "sensor.ws_event_rain": sensor("sensor.ws_event_rain", 0.24, { unit_of_measurement: "in" }, updated),
-        "sensor.ws_weekly_rain": sensor("sensor.ws_weekly_rain", 0.61, { unit_of_measurement: "in" }, updated),
-        "sensor.ws_monthly_rain": sensor("sensor.ws_monthly_rain", 1.42, { unit_of_measurement: "in" }, updated),
-        "sensor.ws_yearly_rain": sensor("sensor.ws_yearly_rain", 9.8, { unit_of_measurement: "in" }, updated),
-        "sensor.ws_last_rain": sensor("sensor.ws_last_rain", new Date(now - 5 * 3600 * 1000).toISOString(), { device_class: "timestamp" }, updated),
-        "sensor.ws_uv_index": sensor("sensor.ws_uv_index", 4, {}, updated),
-        "sensor.ws_irradiance": sensor("sensor.ws_irradiance", 420, { unit_of_measurement: "W/m²" }, updated),
-        "sensor.ws_solar_rad_lx": sensor("sensor.ws_solar_rad_lx", 18000, { unit_of_measurement: "lx" }, updated),
-        "sensor.ws_relative_pressure": sensor("sensor.ws_relative_pressure", 30.05, { unit_of_measurement: "inHg" }, updated),
-        "sensor.ws_absolute_pressure": sensor("sensor.ws_absolute_pressure", 29.72, { unit_of_measurement: "inHg" }, updated),
-        "sensor.ws_indoor_temperature": sensor("sensor.ws_indoor_temperature", 72.5, { unit_of_measurement: "°F" }, updated),
-        "sensor.ws_indoor_humidity": sensor("sensor.ws_indoor_humidity", 38, { unit_of_measurement: "%" }, updated),
-        "sensor.ws_co2": sensor("sensor.ws_co2", 640, { unit_of_measurement: "ppm" }, updated),
-        "sensor.ws_pm25": sensor("sensor.ws_pm25", 18, { unit_of_measurement: "µg/m³" }, updated),
-        "sensor.ws_soil_moisture_1": sensor("sensor.ws_soil_moisture_1", 42, { unit_of_measurement: "%" }, updated),
-        "sensor.ws_soil_moisture_2": sensor("sensor.ws_soil_moisture_2", 28, { unit_of_measurement: "%" }, updated),
-        "sensor.ws_lightning_num": sensor("sensor.ws_lightning_num", 3, { unit_of_measurement: "strikes" }, updated),
-        "sensor.ws_lightning": sensor("sensor.ws_lightning", 8, { unit_of_measurement: "mi" }, updated),
-        "sensor.ws_lightning_time": sensor("sensor.ws_lightning_time", new Date(now - 40 * 60 * 1000).toISOString(), {}, updated),
+        "sensor.ws_temperature": sensor("sensor.ws_temperature", 71.2, { unit_of_measurement: "°F", device_class: "temperature" }),
+        "sensor.ws_feels_like": sensor("sensor.ws_feels_like", 71.0, { unit_of_measurement: "°F" }),
+        "sensor.ws_humidity": sensor("sensor.ws_humidity", 46, { unit_of_measurement: "%" }),
+        "sensor.ws_dew_point": sensor("sensor.ws_dew_point", 49.1, { unit_of_measurement: "°F" }),
+        "sensor.ws_temp_max": sensor("sensor.ws_temp_max", 78, { unit_of_measurement: "°F" }),
+        "sensor.ws_temp_min": sensor("sensor.ws_temp_min", 58, { unit_of_measurement: "°F" }),
+        "sensor.ws_wind_speed": sensor("sensor.ws_wind_speed", 6.4, { unit_of_measurement: "mph" }),
+        "sensor.ws_wind_gust": sensor("sensor.ws_wind_gust", 11.2, { unit_of_measurement: "mph" }),
+        "sensor.ws_max_gust": sensor("sensor.ws_max_gust", 18.0, { unit_of_measurement: "mph" }),
+        "sensor.ws_wind_direction": sensor("sensor.ws_wind_direction", "SE", {}),
+        "sensor.ws_precipitation_intensity": sensor("sensor.ws_precipitation_intensity", 0, { unit_of_measurement: "in/h" }),
+        "sensor.ws_daily_rain": sensor("sensor.ws_daily_rain", 0.24, { unit_of_measurement: "in" }),
+        "sensor.ws_event_rain": sensor("sensor.ws_event_rain", 0.24, { unit_of_measurement: "in" }),
+        "sensor.ws_weekly_rain": sensor("sensor.ws_weekly_rain", 0.61, { unit_of_measurement: "in" }),
+        "sensor.ws_monthly_rain": sensor("sensor.ws_monthly_rain", 1.42, { unit_of_measurement: "in" }),
+        "sensor.ws_yearly_rain": sensor("sensor.ws_yearly_rain", 9.8, { unit_of_measurement: "in" }),
+        "sensor.ws_last_rain": sensor("sensor.ws_last_rain", new Date(now - 5 * 3600 * 1000).toISOString(), { device_class: "timestamp" }),
+        "sensor.ws_uv_index": sensor("sensor.ws_uv_index", 4, {}),
+        "sensor.ws_irradiance": sensor("sensor.ws_irradiance", 420, { unit_of_measurement: "W/m²" }),
+        "sensor.ws_solar_rad_lx": sensor("sensor.ws_solar_rad_lx", 18000, { unit_of_measurement: "lx" }),
+        "sensor.ws_relative_pressure": sensor("sensor.ws_relative_pressure", 30.05, { unit_of_measurement: "inHg" }),
+        "sensor.ws_absolute_pressure": sensor("sensor.ws_absolute_pressure", 29.72, { unit_of_measurement: "inHg" }),
+        "sensor.ws_indoor_temperature": sensor("sensor.ws_indoor_temperature", 72.5, { unit_of_measurement: "°F" }),
+        "sensor.ws_indoor_humidity": sensor("sensor.ws_indoor_humidity", 38, { unit_of_measurement: "%" }),
+        "sensor.ws_co2": sensor("sensor.ws_co2", 640, { unit_of_measurement: "ppm" }),
+        "sensor.ws_pm25": sensor("sensor.ws_pm25", 18, { unit_of_measurement: "µg/m³" }),
+        "sensor.ws_aqi": sensor("sensor.ws_aqi", 42, {}),
+        "sensor.ws_voc": sensor("sensor.ws_voc", 180, { unit_of_measurement: "ppb" }),
+        "sensor.ws_noise": sensor("sensor.ws_noise", 48, { unit_of_measurement: "dB" }),
+        "sensor.ws_leaf_wetness": sensor("sensor.ws_leaf_wetness", 12, { unit_of_measurement: "%" }),
+        "sensor.ws_soil_moisture_1": sensor("sensor.ws_soil_moisture_1", 42, { unit_of_measurement: "%" }),
+        "sensor.ws_soil_moisture_2": sensor("sensor.ws_soil_moisture_2", 28, { unit_of_measurement: "%" }),
+        "sensor.ws_soil_temperature_1": sensor("sensor.ws_soil_temperature_1", 64, { unit_of_measurement: "°F" }),
+        "sensor.ws_lightning_num": sensor("sensor.ws_lightning_num", 3, { unit_of_measurement: "strikes" }),
+        "sensor.ws_lightning": sensor("sensor.ws_lightning", 8, { unit_of_measurement: "mi" }),
+        "sensor.ws_lightning_time": sensor("sensor.ws_lightning_time", new Date(now - 40 * 60 * 1000).toISOString(), {}),
+        "sensor.moon_phase": sensor("sensor.moon_phase", "waning_gibbous", {}),
         "binary_sensor.ws_battery": {
           entity_id: "binary_sensor.ws_battery",
           state: "off",
-          last_updated: updated,
-          last_changed: updated,
+          last_updated: fresh,
+          last_changed: fresh,
           attributes: { device_class: "battery" },
         },
-        "sensor.ws_battery_pct": sensor("sensor.ws_battery_pct", 87, { unit_of_measurement: "%", device_class: "battery" }, updated),
+        "sun.sun": {
+          entity_id: "sun.sun",
+          state: "above_horizon",
+          last_updated: fresh,
+          last_changed: fresh,
+          attributes: {
+            next_rising: new Date(now + 12 * 3600 * 1000).toISOString(),
+            next_setting: new Date(now + 5 * 3600 * 1000).toISOString(),
+          },
+        },
         "weather.home": {
           entity_id: "weather.home",
           state: "partlycloudy",
-          last_updated: updated,
-          last_changed: updated,
+          last_updated: fresh,
+          last_changed: fresh,
           attributes: {
             temperature: 71,
             temperature_unit: "°F",
-            forecast: [
-              { datetime: new Date(now).toISOString(), condition: "sunny", temperature: 78, templow: 58, precipitation_probability: 10 },
-              { datetime: new Date(now + 86400000).toISOString(), condition: "rainy", temperature: 70, templow: 55, precipitation_probability: 70 },
-              { datetime: new Date(now + 2 * 86400000).toISOString(), condition: "cloudy", temperature: 68, templow: 52, precipitation_probability: 40 },
-              { datetime: new Date(now + 3 * 86400000).toISOString(), condition: "partlycloudy", temperature: 73, templow: 54, precipitation_probability: 20 },
-              { datetime: new Date(now + 4 * 86400000).toISOString(), condition: "sunny", temperature: 76, templow: 56, precipitation_probability: 5 },
+            forecast: daily,
+            alerts: [
+              {
+                title: "Wind Advisory",
+                severity: "moderate",
+                description: "Gusty afternoon winds 25–35 mph possible through evening.",
+              },
             ],
           },
         },
       };
-      const forecast = states["weather.home"].attributes.forecast;
+
+      const historyPayload = {
+        "sensor.ws_temperature": histSeries(71, 4),
+        "sensor.ws_humidity": histSeries(46, 8),
+        "sensor.ws_wind_speed": histSeries(6, 3),
+        "sensor.ws_relative_pressure": histSeries(30.05, 0.08),
+        "sensor.ws_wind_direction": dirHist,
+      };
+
       return {
         states,
         locale: { language: "en" },
         callService() {},
-        // Minimal mock so attribute forecasts are not wiped by a null connection.
         connection: {
-          async subscribeMessage(cb) {
+          async subscribeMessage(cb, msg) {
+            const forecast = msg.forecast_type === "hourly" ? hourly : daily;
             queueMicrotask(() => cb({ forecast }));
             return () => {};
           },
-          async sendMessagePromise() {
-            return { response: { "weather.home": { forecast } } };
+          async sendMessagePromise(msg) {
+            if (msg.type === "history/history_during_period") {
+              const out = {};
+              for (const id of msg.entity_ids || []) {
+                if (historyPayload[id]) out[id] = historyPayload[id];
+              }
+              return out;
+            }
+            if (msg.service === "get_forecasts") {
+              const type = msg.service_data?.type;
+              return {
+                response: {
+                  "weather.home": { forecast: type === "hourly" ? hourly : daily },
+                },
+              };
+            }
+            return { response: { "weather.home": { forecast: daily } } };
           },
         },
       };
@@ -200,8 +258,16 @@
       layout: "full",
       unit_system: "imperial",
       show_forecast: true,
+      show_hourly_forecast: true,
+      show_history_sparklines: true,
+      show_wind_rose: true,
+      show_alerts: true,
       weather_entity: "weather.home",
+      sun_entity: "sun.sun",
+      moon_entity: "sensor.moon_phase",
       forecast_days: 5,
+      hourly_forecast_hours: 12,
+      rain_month_normal: 2.5,
       show_updated: true,
       show_beaufort: true,
       stale_minutes: 30,
@@ -212,23 +278,10 @@
       ],
     };
 
-    mount("full", base, buildHass(fresh));
-    mount("stale", { ...base, name: "Stale Station (90m)" }, buildHass(stale));
-    mount("compact", { ...base, name: "Compact", layout: "compact", show_beaufort: false }, buildHass(fresh));
-
-    // Drive a pressure change so trend can flip after a second update
-    setTimeout(() => {
-      const card = document.querySelector("#full mushroom-weather-station-card");
-      if (!card) return;
-      const hass = buildHass(fresh);
-      hass.states["sensor.ws_relative_pressure"].state = "30.12";
-      card.hass = hass;
-      setTimeout(() => {
-        hass.states["sensor.ws_relative_pressure"].state = "30.18";
-        hass.states["sensor.ws_relative_pressure"].last_updated = new Date().toISOString();
-        card.hass = hass;
-      }, 200);
-    }, 300);
+    const hass = buildHass();
+    mount("full", base, hass);
+    mount("chips", { ...base, name: "Glance chips", layout: "chips" }, hass);
+    mount("compact", { ...base, name: "Compact", layout: "compact", show_beaufort: false }, hass);
   </script>
 </body>
 </html>

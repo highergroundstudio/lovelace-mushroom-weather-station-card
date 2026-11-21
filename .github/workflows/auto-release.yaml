@@ -1,0 +1,157 @@
+name: Auto Release
+
+# Publishes a GitHub release whenever package.json version on main changes,
+# so HACS picks up updates without a manual Actions dispatch.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read version / release state
+        id: ver
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse "v$VER" >/dev/null 2>&1; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if gh release view "v$VER" >/dev/null 2>&1; then
+            meta=$(gh release view "v$VER" --json assets,isDraft)
+            assets=$(printf '%s' "$meta" | jq -r '[.assets[].name] | join(",")')
+            is_draft=$(printf '%s' "$meta" | jq -r '.isDraft')
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+            echo "assets=$assets" >> "$GITHUB_OUTPUT"
+            echo "is_draft=$is_draft" >> "$GITHUB_OUTPUT"
+            if [[ "$assets" == *"mushroom-weather-station-card.js"* && "$assets" == *"mushroom-weather-station-card-editor.js"* && "$is_draft" != "true" ]]; then
+              echo "release_complete=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "release_complete=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
+            echo "release_complete=false" >> "$GITHUB_OUTPUT"
+            echo "is_draft=false" >> "$GITHUB_OUTPUT"
+            echo "assets=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if release complete
+        if: steps.ver.outputs.release_complete == 'true'
+        run: echo "Release v${{ steps.ver.outputs.version }} already published with both JS assets — skipping."
+
+      - name: Checkout existing tag for repair builds
+        if: steps.ver.outputs.release_complete != 'true' && steps.ver.outputs.tag_exists == 'true'
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          echo "Repairing release for existing tag v${VER} — building from that tag."
+          git checkout "v${VER}"
+
+      - name: Setup Node
+        if: steps.ver.outputs.release_complete != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install, stamp, build
+        if: steps.ver.outputs.release_complete != 'true'
+        run: |
+          npm ci
+          bash scripts/set-version.sh "${{ steps.ver.outputs.version }}"
+          npm test
+          npm run build
+
+      - name: Commit stamp if needed
+        if: steps.ver.outputs.release_complete != 'true' && steps.ver.outputs.tag_exists != 'true'
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          need_push=false
+          # Commit every set-version.sh / build output so rebase is not blocked by a dirty tree.
+          stamp_files=(
+            src/version.ts
+            package.json
+            package-lock.json
+            README.md
+            dist/mushroom-weather-station-card.js
+            dist/mushroom-weather-station-card-editor.js
+          )
+          git add "${stamp_files[@]}" || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Release v${VER} (auto)"
+            need_push=true
+          fi
+          git fetch origin main
+          # Sync when origin/main has commits we lack (behind or diverged).
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "Checkout is behind/diverged from origin/main; rebasing…"
+            git rebase origin/main
+            bash scripts/set-version.sh "$VER"
+            npm test
+            npm run build
+            git add "${stamp_files[@]}" || true
+            if ! git diff --cached --quiet; then
+              git commit -m "Release v${VER} (auto rebuild)"
+            fi
+            need_push=true
+          fi
+          if [[ "$need_push" == "true" ]]; then
+            if ! git push origin HEAD:main; then
+              echo "Push to main failed (branch advanced). Re-run after integrating latest main." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Ensure tag
+        if: steps.ver.outputs.release_complete != 'true' && steps.ver.outputs.tag_exists != 'true'
+        env:
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          git tag "v${VER}"
+          git push origin "v${VER}"
+
+      - name: Publish or repair release
+        if: steps.ver.outputs.release_complete != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          files=(dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js)
+          for f in "${files[@]}"; do
+            [[ -f "$f" ]] || { echo "Missing $f" >&2; exit 1; }
+          done
+
+          if gh release view "v${VER}" >/dev/null 2>&1; then
+            echo "Release exists — uploading/replacing assets"
+            gh release upload "v${VER}" "${files[@]}" --clobber
+            if [[ "$(gh release view "v${VER}" --json isDraft --jq '.isDraft')" == "true" ]]; then
+              echo "Publishing draft release v${VER}"
+              gh release edit "v${VER}" --draft=false --latest
+            fi
+          else
+            gh release create "v${VER}" "${files[@]}" \
+              --title "v${VER}" \
+              --latest \
+              --generate-notes
+          fi

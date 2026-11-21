@@ -4,37 +4,56 @@
  *
  * type: custom:mushroom-weather-station-card
  */
-import { CARD_NAME, CARD_TYPE, DEFAULT_SECTION_ORDER, SECTION_LABELS, WEATHER_ICONS } from "./const";
 import {
+  CARD_NAME,
+  CARD_TYPE,
+  DEFAULT_SECTION_ORDER,
+  HISTORY_SPARK_KEYS,
+  SECTION_LABELS,
+  WEATHER_ICONS,
+} from "./const";
+import {
+  aqiMeta,
+  alertSeverityColor,
   applyPrefix,
   available,
   batteryInfo,
   beaufort,
+  collectAlerts,
   colorFromThresholds,
   convertValue,
+  daysSinceTimestamp,
+  downsampleHistory,
   entityAgeMs,
   entityState,
   esc,
   fmtNum,
   formatLastRain,
+  formatSunTime,
+  historyLineSpark,
   iconColorVar,
   mergeThresholds,
+  moonMeta,
   normalizeSectionOrder,
   num,
   parseWindDirection,
   pm25Meta,
   pressureTrendMeta,
+  rainMonthProgress,
   relativeTime,
   thresholdCompareValue,
   unitOf,
   uvMeta,
+  windRoseBins,
+  windRoseSvg,
 } from "./helpers";
 import { CARD_STYLES } from "./styles";
 import type {
   ActionConfig,
   CardConfig,
-  ForecastDay,
+  ForecastItem,
   HassEntity,
+  HistoryPoint,
   HomeAssistant,
   SectionId,
 } from "./types";
@@ -58,16 +77,37 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _hass?: HomeAssistant;
   private _forecastSubId: string | null = null;
   private _forecastUnsub: (() => void) | null = null;
-  private _forecastDays: ForecastDay[] = [];
+  private _hourlyUnsub: (() => void) | null = null;
+  private _forecastDays: ForecastItem[] = [];
+  private _forecastHours: ForecastItem[] = [];
   private _forecastError: string | null = null;
   private _forecastToken = 0;
   private _renderSignature: string | null = null;
   private _staleTimer: number | null = null;
   private _prevPressure: number | null = null;
   private _pressureSample: number | null = null;
+  private _history: Record<string, HistoryPoint[]> = {};
+  private _historyToken = 0;
+  private _historyFetchedAt = 0;
+  private _historyPending = false;
+  private _forecastPending = false;
+  private _forecastReadyKey: string | null = null;
+  /** When set, setup failed because the weather entity was absent; retry after `_forecastRetryAt`. */
+  private _forecastAbsentKey: string | null = null;
+  private _forecastRetryAt = 0;
+  private _chipsExpanded = false;
 
   static getStubConfig(): CardConfig {
-    return { prefix: "ws", layout: "full", name: "Weather Station", unit_system: "native" };
+    return {
+      prefix: "ws",
+      layout: "full",
+      name: "Weather Station",
+      unit_system: "native",
+      show_hourly_forecast: true,
+      show_history_sparklines: true,
+      show_wind_rose: true,
+      show_alerts: true,
+    };
   }
 
   static async getConfigElement(): Promise<HTMLElement> {
@@ -82,6 +122,7 @@ class MushroomWeatherStationCard extends HTMLElement {
 
   setConfig(config: CardConfig): void {
     if (!config) throw new Error("Invalid configuration");
+    const prevWeather = this._config?.weather_entity || null;
     this._config = applyPrefix({
       layout: "full",
       name: "Weather Station",
@@ -92,22 +133,42 @@ class MushroomWeatherStationCard extends HTMLElement {
       actions: {},
       thresholds: {},
       show_updated: true,
+      show_history_sparklines: true,
+      show_wind_rose: true,
+      show_alerts: true,
+      // Hourly follows weather_entity when unset (see _wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
+      hourly_forecast_hours: 24,
+      history_hours: 24,
       show_beaufort: false,
+      sun_entity: "sun.sun",
       ...config,
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER),
     });
-    this._forecastSubId = null;
+    const nextWeather = this._config.weather_entity || null;
+    this._teardownForecast(true);
     this._forecastToken++;
+    this._historyToken++;
+    // Drop cached forecasts when the weather entity changes so old readings cannot stick.
+    if (prevWeather !== nextWeather) {
+      this._forecastDays = [];
+      this._forecastHours = [];
+      this._forecastError = null;
+    }
+    this._history = {};
+    this._historyFetchedAt = 0;
+    this._historyPending = false;
     this._renderSignature = null;
     void this._ensureForecastSub();
+    void this._ensureHistory();
     this._render(true);
   }
 
   set hass(hass: HomeAssistant) {
     this._hass = hass;
     void this._ensureForecastSub();
+    void this._ensureHistory();
     this._render(false);
   }
 
@@ -117,28 +178,45 @@ class MushroomWeatherStationCard extends HTMLElement {
 
   disconnectedCallback(): void {
     this._forecastToken++;
-    if (this._forecastUnsub) {
-      try { this._forecastUnsub(); } catch { /* ignore */ }
-      this._forecastUnsub = null;
-    }
+    this._historyToken++;
+    this._historyPending = false;
+    this._teardownForecast(true);
     if (this._staleTimer) {
       window.clearInterval(this._staleTimer);
       this._staleTimer = null;
     }
   }
 
+  private _teardownForecast(clearReady: boolean): void {
+    if (this._forecastUnsub) {
+      try { this._forecastUnsub(); } catch { /* ignore */ }
+      this._forecastUnsub = null;
+    }
+    if (this._hourlyUnsub) {
+      try { this._hourlyUnsub(); } catch { /* ignore */ }
+      this._hourlyUnsub = null;
+    }
+    this._forecastSubId = null;
+    this._forecastPending = false;
+    if (clearReady) {
+      this._forecastReadyKey = null;
+      this._forecastAbsentKey = null;
+      this._forecastRetryAt = 0;
+    }
+  }
+
   getCardSize(): number {
     const layout = this._config?.layout || "full";
-    if (layout === "chips") return 1;
-    if (layout === "compact") return 4;
-    return 9;
+    if (layout === "chips") return this._chipsExpanded ? 3 : 1;
+    if (layout === "compact") return 5;
+    return 10;
   }
 
   getGridOptions(): { columns: number; rows: number } {
     const layout = this._config?.layout || "full";
-    if (layout === "chips") return { columns: 12, rows: 1 };
-    if (layout === "compact") return { columns: 12, rows: 4 };
-    return { columns: 12, rows: 8 };
+    if (layout === "chips") return { columns: 12, rows: this._chipsExpanded ? 3 : 1 };
+    if (layout === "compact") return { columns: 12, rows: 5 };
+    return { columns: 12, rows: 9 };
   }
 
   private _st(key: string): HassEntity | null {
@@ -183,15 +261,19 @@ class MushroomWeatherStationCard extends HTMLElement {
     const entities = this._config?.entities || {};
     const ids = Object.values(entities).filter(Boolean);
     if (this._config?.weather_entity) ids.push(this._config.weather_entity);
+    if (this._config?.alert_entity) ids.push(this._config.alert_entity);
+    if (this._config?.sun_entity) ids.push(this._config.sun_entity);
+    if (this._config?.moon_entity) ids.push(this._config.moon_entity);
     const parts = ids.map((id) => {
       const st = this._hass?.states?.[id];
       if (!st) return `${id}:missing`;
       return `${id}:${st.state}:${st.last_updated || ""}`;
     });
     parts.push(
-      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.forecast_days}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${(this._config?.section_order || []).join(",")}`,
+      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}`,
     );
-    parts.push(`fc:${(this._forecastDays || []).length}:${this._forecastError || ""}`);
+    parts.push(`fc:${(this._forecastDays || []).length}:${(this._forecastHours || []).length}:${this._forecastError || ""}`);
+    parts.push(`hist:${Object.keys(this._history).map((k) => `${k}:${this._history[k]?.length || 0}`).join(",")}`);
     return parts.join("|");
   }
 
@@ -230,6 +312,14 @@ class MushroomWeatherStationCard extends HTMLElement {
       ev.preventDefault();
       if (held) {
         held = false;
+        return;
+      }
+      if (key === "__chips_expand") {
+        this._chipsExpanded = !this._chipsExpanded;
+        this._renderSignature = null;
+        this._render(true);
+        // Restore keyboard focus after the disclosure control is rebuilt.
+        (this.shadowRoot?.querySelector('[data-key="__chips_expand"]') as HTMLElement | null)?.focus();
         return;
       }
       this._handleAction(tap, entityId);
@@ -290,6 +380,13 @@ class MushroomWeatherStationCard extends HTMLElement {
     return `<div class="spark">${bars}</div>`;
   }
 
+  private _histSpark(key: string): string {
+    if (this._config?.show_history_sparklines === false) return "";
+    const pts = this._history[key];
+    if (!pts?.length) return "";
+    return historyLineSpark(downsampleHistory(pts));
+  }
+
   private _trackPressure(value: number | null) {
     if (value == null) return pressureTrendMeta(null, null);
     if (this._prevPressure == null || Math.abs((this._prevPressure ?? 0) - value) > 0.0001) {
@@ -316,76 +413,309 @@ class MushroomWeatherStationCard extends HTMLElement {
     }, 60000);
   }
 
-  private async _ensureForecastSub(): Promise<void> {
-    const id = this._config?.show_forecast ? this._config.weather_entity : null;
-    if (!id || !this._hass) {
-      if (this._forecastUnsub) {
-        try { this._forecastUnsub(); } catch { /* ignore */ }
-        this._forecastUnsub = null;
-      }
-      this._forecastSubId = null;
-      return;
-    }
-    if (this._forecastSubId === id && this._forecastUnsub) return;
-    if (this._forecastUnsub) {
-      try { this._forecastUnsub(); } catch { /* ignore */ }
-      this._forecastUnsub = null;
-    }
-    this._forecastSubId = id;
-    const token = ++this._forecastToken;
-    this._forecastDays = [];
-    this._forecastError = null;
-
-    const attrDays = entityState(this._hass, id)?.attributes?.forecast;
-    if (Array.isArray(attrDays) && attrDays.length) this._forecastDays = attrDays;
-
+  private async _fetchForecastType(
+    id: string,
+    forecastType: "daily" | "hourly",
+    token: number,
+  ): Promise<ForecastItem[]> {
     try {
-      if (this._hass.connection?.subscribeMessage) {
-        const unsub = await this._hass.connection.subscribeMessage(
-          (ev) => {
-            if (token !== this._forecastToken) return;
-            this._forecastDays = ev?.forecast || [];
-            this._forecastError = this._forecastDays.length ? null : "empty";
-            this._renderSignature = null;
-            this._render(true);
-          },
-          { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id },
-        );
-        if (token !== this._forecastToken) {
-          try { unsub(); } catch { /* ignore */ }
-          return;
-        }
-        this._forecastUnsub = unsub;
-        return;
+      if (this._hass?.connection?.subscribeMessage && forecastType === "daily") {
+        /* subscribe handled separately */
       }
-    } catch {
-      if (token !== this._forecastToken) return;
-      /* fall through */
-    }
-
-    try {
-      const result = await this._hass.connection?.sendMessagePromise?.({
+      const result = await this._hass?.connection?.sendMessagePromise?.({
         type: "call_service",
         domain: "weather",
         service: "get_forecasts",
-        service_data: { type: "daily", entity_id: id },
+        service_data: { type: forecastType, entity_id: id },
         return_response: true,
       });
-      if (token !== this._forecastToken) return;
-      const days = result?.response?.[id]?.forecast || [];
-      // Keep attribute forecast when the connection is missing/empty (demo / offline).
-      if (days.length) {
-        this._forecastDays = days;
-        this._forecastError = null;
-      } else if (!this._forecastDays.length) {
-        this._forecastError = "empty";
-      }
-    } catch (err) {
-      if (token !== this._forecastToken) return;
-      if (!this._forecastDays.length) this._forecastError = (err as Error)?.message || "failed";
+      if (token !== this._forecastToken) return [];
+      return result?.response?.[id]?.forecast || [];
+    } catch {
+      return [];
     }
-    this._renderSignature = null;
-    this._render(true);
+  }
+
+  private _wantHourly(): boolean {
+    if (!this._config?.weather_entity) return false;
+    if (this._config.show_hourly_forecast === false) return false;
+    if (this._config.show_hourly_forecast === true) return true;
+    // Unset: enable hourly when a weather entity is already configured.
+    return true;
+  }
+
+  private async _ensureForecastSub(): Promise<void> {
+    const wantDaily = !!this._config?.show_forecast;
+    const wantHourly = this._wantHourly();
+    const id = wantDaily || wantHourly ? this._config?.weather_entity : null;
+    if (!id || !this._hass) {
+      this._teardownForecast(true);
+      return;
+    }
+    const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
+    // Completed setup for this intent — do not resubscribe on every hass tick.
+    if (this._forecastReadyKey === subKey) return;
+    // Setup already running for this key.
+    if (this._forecastPending && this._forecastSubId === subKey) return;
+
+    const entityPresent = !!entityState(this._hass, id);
+    // Missing-entity backoff: retry immediately when the entity appears, otherwise wait.
+    if (this._forecastAbsentKey === subKey) {
+      if (entityPresent) {
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
+      } else if (Date.now() < this._forecastRetryAt) {
+        return;
+      }
+    }
+
+    // Live websocket handlers already cover what we want.
+    if (this._forecastSubId === subKey) {
+      const dailyOk = !wantDaily || !!this._forecastUnsub;
+      const hourlyOk = !wantHourly || !!this._hourlyUnsub;
+      if (dailyOk && hourlyOk) {
+        this._forecastReadyKey = subKey;
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
+        return;
+      }
+    } else {
+      // Intent changed — drop previous handlers but keep cached arrays to avoid flicker.
+      this._teardownForecast(false);
+    }
+
+    this._forecastPending = true;
+    this._forecastSubId = subKey;
+    const token = ++this._forecastToken;
+    this._forecastError = null;
+
+    try {
+      const attrDays = entityState(this._hass, id)?.attributes?.forecast;
+      if (Array.isArray(attrDays) && attrDays.length && !this._forecastDays.length) {
+        this._forecastDays = attrDays;
+      }
+
+      let dailySettled = !wantDaily;
+      let hourlySettled = !wantHourly;
+
+      if (wantDaily && !this._forecastUnsub) {
+        try {
+          if (this._hass.connection?.subscribeMessage) {
+            const unsub = await this._hass.connection.subscribeMessage(
+              (ev) => {
+                if (token !== this._forecastToken) return;
+                this._forecastDays = ev?.forecast || [];
+                this._forecastError = this._forecastDays.length ? null : "empty";
+                this._renderSignature = null;
+                this._render(true);
+              },
+              { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id },
+            );
+            if (token !== this._forecastToken) {
+              try { unsub(); } catch { /* ignore */ }
+              return;
+            }
+            this._forecastUnsub = unsub;
+            dailySettled = true;
+          }
+        } catch {
+          /* fall through to get_forecasts */
+        }
+        if (token !== this._forecastToken) return;
+      } else if (wantDaily) {
+        dailySettled = true;
+      }
+
+      if (wantHourly && !this._hourlyUnsub) {
+        try {
+          if (this._hass.connection?.subscribeMessage) {
+            const unsub = await this._hass.connection.subscribeMessage(
+              (ev) => {
+                if (token !== this._forecastToken) return;
+                this._forecastHours = ev?.forecast || [];
+                this._renderSignature = null;
+                this._render(true);
+              },
+              { type: "weather/subscribe_forecast", forecast_type: "hourly", entity_id: id },
+            );
+            if (token !== this._forecastToken) {
+              try { unsub(); } catch { /* ignore */ }
+              return;
+            }
+            this._hourlyUnsub = unsub;
+            hourlySettled = true;
+          }
+        } catch {
+          /* hourly often unsupported — fall through to get_forecasts */
+        }
+        if (token !== this._forecastToken) return;
+      } else if (wantHourly) {
+        hourlySettled = true;
+      }
+
+      // One-shot fallbacks. Mark settled even on empty so hass ticks do not retry forever
+      // once the weather entity is present (empty hourly usually means unsupported).
+      if (wantDaily && !this._forecastUnsub) {
+        const days = await this._fetchForecastType(id, "daily", token);
+        if (token !== this._forecastToken) return;
+        if (days.length) {
+          this._forecastDays = days;
+          this._forecastError = null;
+        } else if (!this._forecastDays.length) {
+          this._forecastError = "empty";
+        }
+        dailySettled = true;
+      }
+
+      if (wantHourly && !this._hourlyUnsub) {
+        const hours = await this._fetchForecastType(id, "hourly", token);
+        if (token !== this._forecastToken) return;
+        if (hours.length) this._forecastHours = hours;
+        hourlySettled = true;
+      }
+
+      if (token === this._forecastToken && dailySettled && hourlySettled) {
+        const present = !!entityState(this._hass, id);
+        // Latch ready for live unsubs, cached data, or a present entity (incl. empty unsupported types).
+        if (
+          present
+          || this._forecastUnsub
+          || this._hourlyUnsub
+          || this._forecastDays.length
+          || this._forecastHours.length
+        ) {
+          this._forecastReadyKey = subKey;
+          this._forecastAbsentKey = null;
+          this._forecastRetryAt = 0;
+        } else {
+          // Entity still missing — back off so hass ticks do not flood websockets.
+          this._forecastAbsentKey = subKey;
+          this._forecastRetryAt = Date.now() + 30_000;
+        }
+      }
+
+      this._renderSignature = null;
+      this._render(true);
+    } finally {
+      if (token === this._forecastToken) this._forecastPending = false;
+    }
+  }
+
+  private _historyHours(): number {
+    return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
+  }
+
+  private async _ensureHistory(): Promise<void> {
+    if (!this._hass || !this._config) return;
+    const needSparks = this._config.show_history_sparklines !== false;
+    const needRose = this._config.show_wind_rose !== false;
+    if (!needSparks && !needRose) return;
+    // Honor cache even for empty results; skip while a request is in flight.
+    if (this._historyPending) return;
+    if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1000) return;
+
+    const hours = this._historyHours();
+    const end = new Date();
+    const start = new Date(end.getTime() - hours * 3600 * 1000);
+    const entityIds: string[] = [];
+    const keyById: Record<string, string> = {};
+
+    if (needSparks) {
+      for (const key of HISTORY_SPARK_KEYS) {
+        const id = this._config.entities?.[key];
+        if (id) {
+          entityIds.push(id);
+          keyById[id] = key;
+        }
+      }
+    }
+    if (needRose) {
+      const dirId = this._config.entities?.wind_direction;
+      if (dirId) {
+        entityIds.push(dirId);
+        keyById[dirId] = "wind_direction";
+      }
+    }
+    const unique = [...new Set(entityIds)];
+    // No mapped entities — do not latch pending (there is no try/finally below).
+    if (!unique.length) return;
+
+    this._historyPending = true;
+    const token = ++this._historyToken;
+
+    try {
+      let raw: unknown;
+      if (this._hass.connection?.sendMessagePromise) {
+        raw = await this._hass.connection.sendMessagePromise({
+          type: "history/history_during_period",
+          start_time: start.toISOString(),
+          end_time: end.toISOString(),
+          significant_changes_only: false,
+          minimal_response: true,
+          no_attributes: true,
+          entity_ids: unique,
+        });
+      } else if (this._hass.callApi) {
+        raw = await this._hass.callApi(
+          "GET",
+          `history/period/${start.toISOString()}?filter_entity_id=${unique.join(",")}&significant_changes_only=0&minimal_response`,
+        );
+      } else {
+        return;
+      }
+      if (token !== this._historyToken) return;
+
+      const next: Record<string, HistoryPoint[]> = {};
+      const asRecord = raw as Record<string, Array<{ s?: string; state?: string; lu?: number; last_changed?: string }>> | Array<Array<{ entity_id?: string; state?: string; last_changed?: string }>>;
+
+      const parsePoint = (rawState: unknown, changed: unknown): HistoryPoint | null => {
+        let state = num(rawState);
+        if (state == null && typeof rawState === "string") {
+          const parsed = parseWindDirection({
+            entity_id: "",
+            state: rawState,
+            attributes: {},
+          });
+          state = parsed.deg;
+        }
+        const t = typeof changed === "number"
+          ? (changed > 1e12 ? changed : changed * 1000)
+          : changed
+            ? new Date(String(changed)).getTime()
+            : NaN;
+        return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
+      };
+
+      if (Array.isArray(asRecord)) {
+        for (const series of asRecord) {
+          if (!Array.isArray(series) || !series.length) continue;
+          const id = series[0]?.entity_id || "";
+          const key = keyById[id];
+          if (!key) continue;
+          next[key] = series
+            .map((p) => parsePoint(p.state, p.last_changed))
+            .filter((p): p is HistoryPoint => !!p);
+        }
+      } else if (asRecord && typeof asRecord === "object") {
+        for (const [id, series] of Object.entries(asRecord)) {
+          const key = keyById[id];
+          if (!key || !Array.isArray(series)) continue;
+          next[key] = series
+            .map((p) => parsePoint(p.s ?? p.state, p.lu ?? p.last_changed))
+            .filter((p): p is HistoryPoint => !!p);
+        }
+      }
+
+      this._history = next;
+      this._historyFetchedAt = Date.now();
+      this._renderSignature = null;
+      this._render(true);
+    } catch {
+      /* history optional — still mark attempt so we don't hammer the API */
+      if (token === this._historyToken) this._historyFetchedAt = Date.now();
+    } finally {
+      if (token === this._historyToken) this._historyPending = false;
+    }
   }
 
   private _sectionTitle(label: string, compact: boolean): string {
@@ -397,7 +727,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     return `<section class="section" data-section="${id}">${this._sectionTitle(SECTION_LABELS[id], compact)}${body}</section>`;
   }
 
-  private _tile(key: string, label: string, st: HassEntity | null, value: string, icon: string, color: string): string {
+  private _tile(key: string, label: string, st: HassEntity | null, value: string, icon: string, color: string, spark = ""): string {
     if (!st && !this._config?.show_empty) return "";
     const entityId = st?.entity_id || "";
     return `
@@ -405,8 +735,32 @@ class MushroomWeatherStationCard extends HTMLElement {
         <ha-icon icon="${icon}" style="color:${iconColorVar(color)}"></ha-icon>
         <div class="tile-value">${esc(String(value))}</div>
         <div class="tile-label">${esc(label)}</div>
+        ${spark}
       </button>
     `;
+  }
+
+  private _alertsHtml(): string {
+    if (this._config?.show_alerts === false) return "";
+    const weather = entityState(this._hass, this._config?.weather_entity);
+    const alertEnt = entityState(this._hass, this._config?.alert_entity);
+    const alerts = collectAlerts(weather, alertEnt).slice(0, 3);
+    if (!alerts.length) return "";
+    const entityId = this._config?.alert_entity || this._config?.weather_entity || "";
+    return `<div class="alerts">${alerts
+      .map((a) => {
+        const sev = alertSeverityColor(a.severity);
+        const title = a.title || a.event || "Weather alert";
+        const desc = a.description || "";
+        return `<button class="alert sev-${sev}" data-key="alert" data-entity="${esc(entityId)}">
+          <ha-icon icon="mdi:alert" style="color:${iconColorVar(sev)}"></ha-icon>
+          <div>
+            <div class="alert-title">${esc(title)}</div>
+            ${desc ? `<div class="alert-desc">${esc(desc)}</div>` : ""}
+          </div>
+        </button>`;
+      })
+      .join("")}</div>`;
   }
 
   private _chips(
@@ -415,55 +769,158 @@ class MushroomWeatherStationCard extends HTMLElement {
     humidity: HassEntity | null,
     today: HassEntity | null,
     wind: HassEntity | null,
+    pressure: HassEntity | null,
+    uv: HassEntity | null,
+    gust: HassEntity | null,
     raining: boolean,
   ): string {
     const t = this._conv(temp, "°F");
     const f = this._conv(feels, "°F");
-    const chips = [
+    type ChipItem = { key: string; st: HassEntity; icon: string; text: string };
+    const primary: ChipItem[] = [
       { key: "temperature", st: temp, icon: "mdi:thermometer", text: t.value == null ? "—" : `${Math.round(t.value)}°` },
       { key: "feels_like", st: feels, icon: "mdi:sun-thermometer", text: f.value == null ? "—" : `${Math.round(f.value)}°` },
       { key: "humidity", st: humidity, icon: "mdi:water-percent", text: num(humidity?.state) == null ? "—" : `${Math.round(num(humidity?.state) as number)}%` },
       { key: "rain_today", st: today, icon: raining ? "mdi:weather-pouring" : "mdi:weather-rainy", text: this._fmt("rain_today", today, 2, "in") },
       { key: "wind_speed", st: wind, icon: "mdi:weather-windy", text: this._fmt("wind_speed", wind, 0, "mph") },
-    ].filter((c) => c.st);
-    return `<div class="chips">${chips
-      .map((c) => `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st!.entity_id)}"><ha-icon icon="${c.icon}"></ha-icon><span>${esc(c.text)}</span></button>`)
-      .join("")}</div>`;
+    ].filter((c): c is ChipItem => !!c.st);
+    const extra: ChipItem[] = [
+      { key: "pressure", st: pressure, icon: "mdi:gauge", text: this._fmt("pressure", pressure, 2, "inHg") },
+      { key: "uv", st: uv, icon: "mdi:weather-sunny-alert", text: num(uv?.state) == null ? "—" : `${fmtNum(num(uv?.state), 0)} UV` },
+      { key: "wind_gust", st: gust, icon: "mdi:windsock", text: this._fmt("wind_gust", gust, 0, "mph") },
+    ].filter((c): c is ChipItem => !!c.st);
+    const chipHtml = (c: ChipItem) =>
+      `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st.entity_id)}"><ha-icon icon="${c.icon}"></ha-icon><span>${esc(c.text)}</span></button>`;
+    return `<div class="chips-bar ${this._chipsExpanded ? "expanded" : ""}">
+      <div class="chips">
+        ${primary.map(chipHtml).join("")}
+        ${extra.length ? `<button class="chip expand" data-key="__chips_expand" data-entity="" title="More"><ha-icon icon="mdi:chevron-down"></ha-icon><span>${this._chipsExpanded ? "Less" : "More"}</span></button>` : ""}
+      </div>
+      ${extra.length ? `<div class="chips-extra">${extra.map(chipHtml).join("")}</div>` : ""}
+    </div>`;
   }
 
-  private _forecastHtml(): string {
-    if (!this._config?.show_forecast) return "";
-    const id = this._config.weather_entity;
+  private _hourlyHtml(): string {
+    if (!this._wantHourly()) return "";
+    const id = this._config?.weather_entity;
+    if (!id) return "";
+    const hoursWanted = Math.min(24, Math.max(6, Number(this._config?.hourly_forecast_hours) || 24));
+    const hours = (this._forecastHours || []).slice(0, hoursWanted);
+    if (!hours.length) return "";
     const st = entityState(this._hass, id);
-    if (!id) return `<div class="hint">Pick a weather entity for forecast.</div>`;
-    if (!st) return `<div class="hint">Weather entity ${esc(id)} is missing.</div>`;
-    const daysWanted = Math.min(7, Math.max(1, Number(this._config.forecast_days) || 5));
-    const days = (this._forecastDays || st.attributes.forecast || []).slice(0, daysWanted);
-    if (!days.length) return `<div class="hint">Waiting for daily forecast from ${esc(id)}…</div>`;
-    const target = this._config.unit_system || "native";
-    const tempUnit = st.attributes.temperature_unit || "";
+    const target = this._config?.unit_system || "native";
+    const tempUnit = st?.attributes?.temperature_unit || "";
     return `
-      <div class="forecast">
-        ${days
-          .map((d) => {
-            const when = d.datetime ? new Date(d.datetime) : null;
-            const day = when && !Number.isNaN(when.getTime())
-              ? when.toLocaleDateString(undefined, { weekday: "short" })
+      <div class="forecast hourly">
+        ${hours
+          .map((h) => {
+            const when = h.datetime ? new Date(h.datetime) : null;
+            const label = when && !Number.isNaN(when.getTime())
+              ? when.toLocaleTimeString(undefined, { hour: "numeric" })
               : "—";
-            const hi = d.temperature != null ? convertValue(d.temperature, tempUnit, target) : null;
-            const lo = d.templow != null ? convertValue(d.templow, tempUnit, target) : null;
-            const icon = WEATHER_ICONS[d.condition || ""] || "mdi:weather-partly-cloudy";
-            const pop = d.precipitation_probability != null ? Math.round(Number(d.precipitation_probability)) : null;
-            return `<div class="fday" data-key="forecast" data-entity="${esc(id)}">
-              <div class="fday-name">${esc(day)}</div>
+            const temp = h.temperature != null ? convertValue(h.temperature, tempUnit, target) : null;
+            const icon = WEATHER_ICONS[h.condition || ""] || "mdi:weather-partly-cloudy";
+            const pop = h.precipitation_probability != null ? Math.round(Number(h.precipitation_probability)) : null;
+            return `<div class="fhour" data-key="forecast" data-entity="${esc(id)}">
+              <div class="fhour-name">${esc(label)}</div>
               <ha-icon icon="${icon}"></ha-icon>
-              <div class="fday-temp">${hi?.value != null ? Math.round(hi.value) : "—"}°${lo?.value != null ? ` / ${Math.round(lo.value)}°` : ""}</div>
-              ${pop != null ? `<div class="fday-pop">${pop}%</div>` : ""}
+              <div class="fhour-temp">${temp?.value != null ? Math.round(temp.value) : "—"}°</div>
+              ${pop != null ? `<div class="fhour-pop">${pop}%</div>` : ""}
             </div>`;
           })
           .join("")}
       </div>
     `;
+  }
+
+  private _forecastHtml(): string {
+    const hourly = this._hourlyHtml();
+    const showDaily = !!this._config?.show_forecast;
+    const hourlyExplicit = this._config?.show_hourly_forecast === true;
+    if (!showDaily && !hourly && !hourlyExplicit) return "";
+    const id = this._config?.weather_entity;
+    if (!id) {
+      // Only nudge when the user opted into a forecast feature that needs an entity.
+      return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+    }
+    const st = entityState(this._hass, id);
+    if (!st) return `${hourly}<div class="hint">Weather entity ${esc(id)} is missing.</div>`;
+    let daily = "";
+    if (showDaily) {
+      const daysWanted = Math.min(7, Math.max(1, Number(this._config?.forecast_days) || 5));
+      const days = (this._forecastDays || st.attributes.forecast || []).slice(0, daysWanted);
+      if (!days.length) {
+        daily = `<div class="hint">Waiting for daily forecast from ${esc(id)}…</div>`;
+      } else {
+        const target = this._config?.unit_system || "native";
+        const tempUnit = st.attributes.temperature_unit || "";
+        daily = `
+          <div class="forecast">
+            ${days
+              .map((d) => {
+                const when = d.datetime ? new Date(d.datetime) : null;
+                const day = when && !Number.isNaN(when.getTime())
+                  ? when.toLocaleDateString(undefined, { weekday: "short" })
+                  : "—";
+                const hi = d.temperature != null ? convertValue(d.temperature, tempUnit, target) : null;
+                const lo = d.templow != null ? convertValue(d.templow, tempUnit, target) : null;
+                const icon = WEATHER_ICONS[d.condition || ""] || "mdi:weather-partly-cloudy";
+                const pop = d.precipitation_probability != null ? Math.round(Number(d.precipitation_probability)) : null;
+                return `<div class="fday" data-key="forecast" data-entity="${esc(id)}">
+                  <div class="fday-name">${esc(day)}</div>
+                  <ha-icon icon="${icon}"></ha-icon>
+                  <div class="fday-temp">${hi?.value != null ? Math.round(hi.value) : "—"}°${lo?.value != null ? ` / ${Math.round(lo.value)}°` : ""}</div>
+                  ${pop != null ? `<div class="fday-pop">${pop}%</div>` : ""}
+                </div>`;
+              })
+              .join("")}
+          </div>
+        `;
+      }
+    }
+    return `${hourly}${daily}`;
+  }
+
+  private _soilTiles(): string {
+    const parts: string[] = [];
+    for (let i = 1; i <= 8; i++) {
+      const mKey = `soil_moisture_${i}`;
+      const tKey = `soil_temperature_${i}`;
+      const mSt = this._st(mKey);
+      const tSt = this._st(tKey);
+      parts.push(
+        this._tile(
+          mKey,
+          this._label(mKey, `Soil ${i}`),
+          mSt,
+          num(mSt?.state) == null ? "—" : `${Math.round(num(mSt?.state) as number)}%`,
+          "mdi:water",
+          this._color(mKey, num(mSt?.state), "green"),
+        ),
+      );
+      parts.push(
+        this._tile(
+          tKey,
+          this._label(tKey, `Soil ${i} °`),
+          tSt,
+          tSt ? `${fmtNum(this._conv(tSt, "°F").value, 1)}°` : "—",
+          "mdi:thermometer",
+          this._color("temperature", num(tSt?.state), "amber", this._conv(tSt, "°F").src || "°F"),
+        ),
+      );
+    }
+    const leaf = this._st("leaf_wetness");
+    parts.push(
+      this._tile(
+        "leaf_wetness",
+        this._label("leaf_wetness", "Leaf wet"),
+        leaf,
+        num(leaf?.state) == null ? "—" : `${Math.round(num(leaf?.state) as number)}%`,
+        "mdi:leaf",
+        this._color("leaf_wetness", num(leaf?.state), "cyan"),
+      ),
+    );
+    return parts.join("");
   }
 
   private _renderSection(id: SectionId, ctx: RenderCtx): string {
@@ -472,21 +929,29 @@ class MushroomWeatherStationCard extends HTMLElement {
       case "conditions": {
         if (!ctx.showConditions) return "";
         const body = `<div class="grid">
-          ${this._tile("temperature", this._label("temperature", "Outdoor"), ctx.temp, ctx.t.value == null ? "—" : `${fmtNum(ctx.t.value, 1)}${ctx.tempUnit.includes("°") ? ctx.tempUnit : "°"}`, "mdi:thermometer", ctx.tColor)}
+          ${this._tile("temperature", this._label("temperature", "Outdoor"), ctx.temp, ctx.t.value == null ? "—" : `${fmtNum(ctx.t.value, 1)}${ctx.tempUnit.includes("°") ? ctx.tempUnit : "°"}`, "mdi:thermometer", ctx.tColor, this._histSpark("temperature"))}
           ${this._tile("feels_like", this._label("feels_like", "Feels like"), ctx.feels, ctx.f.value == null ? "—" : `${fmtNum(ctx.f.value, 1)}°`, "mdi:sun-thermometer-outline", this._color("feels_like", ctx.f.raw, ctx.tColor, ctx.f.src))}
           ${this._tile("temp_high", this._label("temp_high", "High"), ctx.high, ctx.hi.value == null ? "—" : `${Math.round(ctx.hi.value)}°`, "mdi:thermometer-high", "orange")}
           ${this._tile("temp_low", this._label("temp_low", "Low"), ctx.low, ctx.lo.value == null ? "—" : `${Math.round(ctx.lo.value)}°`, "mdi:thermometer-low", "blue")}
-          ${this._tile("humidity", this._label("humidity", "Humidity"), ctx.humidity, ctx.h == null ? "—" : `${Math.round(ctx.h)}${esc(this._unitStr("humidity", ctx.humidity, "%"))}`, "mdi:water-percent", this._color("humidity", ctx.h, "blue"))}
+          ${this._tile("humidity", this._label("humidity", "Humidity"), ctx.humidity, ctx.h == null ? "—" : `${Math.round(ctx.h)}${esc(this._unitStr("humidity", ctx.humidity, "%"))}`, "mdi:water-percent", this._color("humidity", ctx.h, "blue"), this._histSpark("humidity"))}
           ${this._tile("dew_point", this._label("dew_point", "Dew point"), ctx.dew, ctx.d.value == null ? "—" : `${fmtNum(ctx.d.value, 1)}°`, "mdi:molecule", this._color("dew_point", ctx.d.raw, "blue", ctx.d.src))}
         </div>`;
         return this._wrapSection(id, compact, body);
       }
       case "wind": {
         if (!ctx.showWind) return "";
-        const body = `<div class="wind-row">
+        const rosePts = this._history.wind_direction || [];
+        const rose = this._config?.show_wind_rose !== false && rosePts.length
+          ? `<div class="wind-rose" data-key="wind_direction" data-entity="${esc(ctx.wdir?.entity_id || "")}">
+              ${windRoseSvg(windRoseBins(rosePts.map((p) => p.state)))}
+              <div class="wind-rose-label">${this._historyHours()}h rose</div>
+            </div>`
+          : "";
+        const body = `<div class="wind-row ${rose ? "with-rose" : ""}">
           ${this._compass(ctx.deg, ctx.card)}
+          ${rose}
           <div class="grid wind-grid">
-            ${this._tile("wind_speed", this._label("wind_speed", ctx.bf != null ? `Speed · B${ctx.bf}` : "Speed"), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(this._unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ctx.ws.raw, "teal", ctx.ws.src || "mph"))}
+            ${this._tile("wind_speed", this._label("wind_speed", ctx.bf != null ? `Speed · B${ctx.bf}` : "Speed"), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(this._unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ctx.ws.raw, "teal", ctx.ws.src || "mph"), this._histSpark("wind_speed"))}
             ${this._tile("wind_gust", this._label("wind_gust", "Gust"), ctx.gust, ctx.wg.value == null ? "—" : `${fmtNum(ctx.wg.value, 1)}`, "mdi:windsock", this._color("wind_gust", ctx.wg.raw, "teal", ctx.wg.src || "mph"))}
             ${this._tile("max_gust", this._label("max_gust", "Max gust"), ctx.maxGust, num(ctx.maxGust?.state) == null ? "—" : this._fmt("max_gust", ctx.maxGust, 1, "mph"), "mdi:weather-windy-variant", "teal")}
           </div>
@@ -495,7 +960,24 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
       case "rain": {
         if (!ctx.showRain) return "";
+        const normal = num(this._config?.rain_month_normal);
+        const monthVal = this._conv(ctx.month, "in").value;
+        const progress = rainMonthProgress(monthVal, normal);
+        const daysSince = daysSinceTimestamp(ctx.lastRain?.state);
+        const goal = progress.pct != null
+          ? `<div class="rain-goal">
+              <div class="rain-goal-top">
+                <span>Month vs normal</span>
+                <span>${fmtNum(monthVal, 2)} / ${fmtNum(normal, 2)}</span>
+              </div>
+              <div class="rain-goal-track"><div class="rain-goal-fill" style="width:${Math.min(100, progress.pct)}%"></div></div>
+              <div class="rain-goal-meta">${esc(progress.label)}${daysSince != null ? ` · ${daysSince < 1 ? "<1" : fmtNum(daysSince, 0)} day${daysSince >= 1.5 ? "s" : ""} since rain` : ""}</div>
+            </div>`
+          : daysSince != null
+            ? `<div class="rain-goal"><div class="rain-goal-top"><span>Days since rain</span><span>${daysSince < 1 ? "<1" : fmtNum(daysSince, 0)}</span></div></div>`
+            : "";
         const body = `
+          ${goal}
           ${this._sparkline([
             { label: "T", value: num(ctx.today?.state) },
             { label: "E", value: num(ctx.event?.state) },
@@ -520,18 +1002,15 @@ class MushroomWeatherStationCard extends HTMLElement {
           ${this._tile("uv", this._label("uv", ctx.uvm.label), ctx.uv, ctx.uvn == null ? "—" : `${fmtNum(ctx.uvn, 0)}`, "mdi:weather-sunny-alert", ctx.uvm.color)}
           ${this._tile("irradiance", this._label("irradiance", "Solar"), ctx.irr, num(ctx.irr?.state) == null ? "—" : `${fmtNum(num(ctx.irr?.state), 0)} ${esc(this._unitStr("irradiance", ctx.irr, unitOf(ctx.irr)))}`.trim(), "mdi:solar-power-variant", "amber")}
           ${this._tile("illuminance", this._label("illuminance", "Light"), ctx.lux, num(ctx.lux?.state) == null ? "—" : `${fmtNum(num(ctx.lux?.state), 0)} ${esc(this._unitStr("illuminance", ctx.lux, "lx"))}`, "mdi:brightness-5", "amber")}
+          ${ctx.sunrise ? this._tile("sunrise", "Sunrise", ctx.sun, ctx.sunrise, "mdi:weather-sunset-up", "amber") : ""}
+          ${ctx.sunset ? this._tile("sunset", "Sunset", ctx.sun, ctx.sunset, "mdi:weather-sunset-down", "orange") : ""}
+          ${ctx.moon ? this._tile("moon", ctx.moonMeta.label, ctx.moon, ctx.moonMeta.label, ctx.moonMeta.icon, "purple") : ""}
         </div>`;
         return this._wrapSection(id, compact, body);
       }
       case "soil": {
         if (!ctx.showSoil) return "";
-        const body = `<div class="grid">
-          ${this._tile("soil_moisture_1", this._label("soil_moisture_1", "Soil 1"), ctx.soil1, num(ctx.soil1?.state) == null ? "—" : `${Math.round(num(ctx.soil1?.state) as number)}%`, "mdi:water", this._color("soil_moisture_1", num(ctx.soil1?.state), "green"))}
-          ${this._tile("soil_moisture_2", this._label("soil_moisture_2", "Soil 2"), ctx.soil2, num(ctx.soil2?.state) == null ? "—" : `${Math.round(num(ctx.soil2?.state) as number)}%`, "mdi:water", this._color("soil_moisture_2", num(ctx.soil2?.state), "green"))}
-          ${this._tile("soil_moisture_3", this._label("soil_moisture_3", "Soil 3"), ctx.soil3, num(ctx.soil3?.state) == null ? "—" : `${Math.round(num(ctx.soil3?.state) as number)}%`, "mdi:water", this._color("soil_moisture_3", num(ctx.soil3?.state), "green"))}
-          ${this._tile("soil_moisture_4", this._label("soil_moisture_4", "Soil 4"), ctx.soil4, num(ctx.soil4?.state) == null ? "—" : `${Math.round(num(ctx.soil4?.state) as number)}%`, "mdi:water", this._color("soil_moisture_4", num(ctx.soil4?.state), "green"))}
-        </div>`;
-        return this._wrapSection(id, compact, body);
+        return this._wrapSection(id, compact, `<div class="grid">${this._soilTiles()}</div>`);
       }
       case "lightning": {
         if (!ctx.showLightning) return "";
@@ -546,13 +1025,16 @@ class MushroomWeatherStationCard extends HTMLElement {
         if (!ctx.showAir) return "";
         const body = `<div class="grid">
           ${this._tile("pm25", this._label("pm25", ctx.pmm.label), ctx.pm25, ctx.pm == null ? "—" : `${fmtNum(ctx.pm, 0)} ${esc(this._unitStr("pm25", ctx.pm25, unitOf(ctx.pm25) || "µg/m³"))}`, "mdi:air-filter", ctx.pmm.color)}
+          ${this._tile("aqi", this._label("aqi", ctx.aqim.label), ctx.aqi, ctx.aqiVal == null ? "—" : `${fmtNum(ctx.aqiVal, 0)}`, "mdi:air-purifier", ctx.aqim.color)}
+          ${this._tile("voc", this._label("voc", "VOC"), ctx.voc, num(ctx.voc?.state) == null ? "—" : `${fmtNum(num(ctx.voc?.state), 0)} ${esc(this._unitStr("voc", ctx.voc, unitOf(ctx.voc) || "ppb"))}`, "mdi:chemical-weapon", this._color("voc", num(ctx.voc?.state), "green"))}
+          ${this._tile("noise", this._label("noise", "Noise"), ctx.noise, num(ctx.noise?.state) == null ? "—" : `${fmtNum(num(ctx.noise?.state), 0)} ${esc(this._unitStr("noise", ctx.noise, unitOf(ctx.noise) || "dB"))}`, "mdi:volume-high", this._color("noise", num(ctx.noise?.state), "green"))}
         </div>`;
         return this._wrapSection(id, compact, body);
       }
       case "station": {
         if (!ctx.showMore) return "";
         const body = `<div class="grid">
-          ${this._tile("pressure", this._label("pressure", ctx.trend.label ? `Pressure · ${ctx.trend.label}` : "Pressure"), ctx.pressure, this._fmt("pressure", ctx.pressure, 2, unitOf(ctx.pressure) || "inHg"), ctx.trend.icon || "mdi:gauge", ctx.trend.color === "grey" ? "teal" : ctx.trend.color)}
+          ${this._tile("pressure", this._label("pressure", ctx.trend.label ? `Pressure · ${ctx.trend.label}` : "Pressure"), ctx.pressure, this._fmt("pressure", ctx.pressure, 2, unitOf(ctx.pressure) || "inHg"), ctx.trend.icon || "mdi:gauge", ctx.trend.color === "grey" ? "teal" : ctx.trend.color, this._histSpark("pressure"))}
           ${this._tile("pressure_abs", this._label("pressure_abs", "Abs pressure"), ctx.pressureAbs, this._fmt("pressure_abs", ctx.pressureAbs, 2, unitOf(ctx.pressureAbs) || "inHg"), "mdi:gauge", "teal")}
           ${this._tile("indoor_temperature", this._label("indoor_temperature", "Indoor"), ctx.indoorT, ctx.indoorT ? `${fmtNum(this._conv(ctx.indoorT, "°F").value, 1)}°` : "—", "mdi:home-thermometer", this._color("temperature", num(ctx.indoorT?.state), "green", this._conv(ctx.indoorT, "°F").src || "°F"))}
           ${this._tile("indoor_humidity", this._label("indoor_humidity", "Indoor RH"), ctx.indoorH, num(ctx.indoorH?.state) == null ? "—" : `${Math.round(num(ctx.indoorH?.state) as number)}%`, "mdi:water-percent", this._color("humidity", num(ctx.indoorH?.state), "cyan"))}
@@ -561,7 +1043,10 @@ class MushroomWeatherStationCard extends HTMLElement {
         return this._wrapSection(id, compact, body);
       }
       case "forecast": {
-        if (!this._config?.show_forecast) return "";
+        const showDaily = !!this._config?.show_forecast;
+        // Explicit hourly enable still shows the section (hint) even without a weather entity.
+        const showHourly = this._wantHourly() || this._config?.show_hourly_forecast === true;
+        if (!showDaily && !showHourly) return "";
         return this._wrapSection(id, compact, this._forecastHtml());
       }
       case "battery": {
@@ -621,14 +1106,24 @@ class MushroomWeatherStationCard extends HTMLElement {
     const indoorH = this._st("indoor_humidity");
     const co2 = this._st("co2");
     const pm25 = this._st("pm25");
-    const soil1 = this._st("soil_moisture_1");
-    const soil2 = this._st("soil_moisture_2");
-    const soil3 = this._st("soil_moisture_3");
-    const soil4 = this._st("soil_moisture_4");
+    const aqi = this._st("aqi");
+    const voc = this._st("voc");
+    const noise = this._st("noise");
+    const leaf = this._st("leaf_wetness");
+    const soilStates: HassEntity[] = [];
+    for (let i = 1; i <= 8; i++) {
+      const m = this._st(`soil_moisture_${i}`);
+      const t = this._st(`soil_temperature_${i}`);
+      if (m) soilStates.push(m);
+      if (t) soilStates.push(t);
+    }
+    if (leaf) soilStates.push(leaf);
     const lightningCount = this._st("lightning_count");
     const lightningDistance = this._st("lightning_distance");
     const lightningTime = this._st("lightning_time");
     const battery = this._st("battery");
+    const sun = entityState(this._hass, this._config.sun_entity || "sun.sun");
+    const moon = entityState(this._hass, this._config.moon_entity);
 
     const t = this._conv(temp, "°F");
     const f = this._conv(feels, "°F");
@@ -649,9 +1144,21 @@ class MushroomWeatherStationCard extends HTMLElement {
     const uvm = uvMeta(uvn, uvColor);
     const pm = num(pm25?.state);
     const pmm = pm25Meta(pm, this._color("pm25", pm, "grey"));
+    const aqiVal = num(aqi?.state);
+    const aqim = aqiMeta(aqiVal, this._color("aqi", aqiVal, "grey"));
     const pressureConv = this._conv(pressure, unitOf(pressure) || "inHg");
     const trend = this._trackPressure(pressureConv.value);
     const bf = this._config.show_beaufort ? beaufort(ws.value) : null;
+    const locale = hass?.locale?.language;
+    const sunrise = formatSunTime(
+      (sun?.attributes?.next_rising as string) || (sun?.attributes?.rising as string),
+      locale,
+    );
+    const sunset = formatSunTime(
+      (sun?.attributes?.next_setting as string) || (sun?.attributes?.setting as string),
+      locale,
+    );
+    const moonMetaInfo = moonMeta(moon?.state);
 
     const ageMs = entityAgeMs(temp) ?? entityAgeMs(pressure) ?? entityAgeMs(wind);
     const staleLimit = Number(this._config.stale_minutes);
@@ -674,11 +1181,11 @@ class MushroomWeatherStationCard extends HTMLElement {
     const showConditions = this._sectionVisible("hide_conditions", [temp, feels, humidity, dew, high, low]);
     const showWind = this._sectionVisible("hide_wind", [wind, gust, maxGust, wdir]);
     const showRain = this._sectionVisible("hide_rain", [rate, today, event, week, month, year, lastRain]);
-    const showSun = this._sectionVisible("hide_sun", [uv, irr, lux]);
+    const showSun = this._sectionVisible("hide_sun", [uv, irr, lux, sun, moon]);
     const showMore = this._sectionVisible("hide_more", [pressure, pressureAbs, indoorT, indoorH, co2]);
-    const showSoil = this._sectionVisible("hide_soil", [soil1, soil2, soil3, soil4]);
+    const showSoil = this._sectionVisible("hide_soil", soilStates);
     const showLightning = this._sectionVisible("hide_lightning", [lightningCount, lightningDistance, lightningTime]);
-    const showAir = this._sectionVisible("hide_air", [pm25]);
+    const showAir = this._sectionVisible("hide_air", [pm25, aqi, voc, noise]);
     const showBattery = !this._config.hide_battery && !!battery;
     const showBody = layout !== "chips";
     const showExtra = layout === "full" || compact;
@@ -709,26 +1216,29 @@ class MushroomWeatherStationCard extends HTMLElement {
       showMore,
       showBattery,
       temp, feels, humidity, dew, high, low,
-      wind, gust, maxGust,
+      wind, gust, maxGust, wdir,
       rate, today, event, week, month, year, lastRain,
       uv, irr, lux,
-      pressure, pressureAbs, indoorT, indoorH, co2, pm25,
-      soil1, soil2, soil3, soil4,
+      pressure, pressureAbs, indoorT, indoorH, co2, pm25, aqi, voc, noise,
       lightningCount, lightningDistance, lightningTime,
-      battery, batt,
-      t, f, hi, lo, h, d, ws, wg, deg, card, rr, uvn, raining, tColor, uvm, pm, pmm, trend, bf, tempUnit,
+      battery, batt, sun, moon,
+      sunrise: sunrise !== "—" ? sunrise : "",
+      sunset: sunset !== "—" ? sunset : "",
+      moonMeta: moonMetaInfo,
+      t, f, hi, lo, h, d, ws, wg, deg, card, rr, uvn, raining, tColor, uvm, pm, pmm, aqiVal, aqim, trend, bf, tempUnit,
     };
 
     const order = normalizeSectionOrder(this._config.section_order);
     const sectionsHtml = showExtra
-      ? order.map((id) => this._renderSection(id, ctx)).join("")
+      ? order.map((sid) => this._renderSection(sid, ctx)).join("")
       : "";
 
     const html = `
       <style>${CARD_STYLES}</style>
-      <ha-card class="${compact ? "compact" : layout}${isStale ? " stale" : ""}">
-        ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, raining) : ""}
+      <ha-card class="${compact ? "compact" : layout === "chips" ? "chips-layout" : layout}${isStale ? " stale" : ""}">
+        ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, pressure, uv, gust, raining) : ""}
         ${showBody ? `
+          ${this._alertsHtml()}
           <div class="header">
             <div class="header-main">
               <div class="title">${esc(name)}</div>
@@ -750,6 +1260,7 @@ class MushroomWeatherStationCard extends HTMLElement {
                 ${h != null ? ` · ${Math.round(h)}% RH` : ""}
               </div>
             </div>
+            <div class="hero-spark">${this._histSpark("temperature")}</div>
           </button>
         ` : ""}
         ${sectionsHtml}
@@ -758,7 +1269,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     `;
 
     this.shadowRoot!.innerHTML = html;
-    this.shadowRoot!.querySelectorAll("[data-entity]").forEach((el) => {
+    this.shadowRoot!.querySelectorAll("[data-entity], [data-key='__chips_expand']").forEach((el) => {
       const htmlEl = el as HTMLElement;
       this._bindTile(htmlEl, htmlEl.dataset.key || "", htmlEl.dataset.entity || "");
     });
@@ -785,6 +1296,7 @@ interface RenderCtx {
   wind: HassEntity | null;
   gust: HassEntity | null;
   maxGust: HassEntity | null;
+  wdir: HassEntity | null;
   rate: HassEntity | null;
   today: HassEntity | null;
   event: HassEntity | null;
@@ -801,15 +1313,19 @@ interface RenderCtx {
   indoorH: HassEntity | null;
   co2: HassEntity | null;
   pm25: HassEntity | null;
-  soil1: HassEntity | null;
-  soil2: HassEntity | null;
-  soil3: HassEntity | null;
-  soil4: HassEntity | null;
+  aqi: HassEntity | null;
+  voc: HassEntity | null;
+  noise: HassEntity | null;
   lightningCount: HassEntity | null;
   lightningDistance: HassEntity | null;
   lightningTime: HassEntity | null;
   battery: HassEntity | null;
   batt: ReturnType<typeof batteryInfo>;
+  sun: HassEntity | null;
+  moon: HassEntity | null;
+  sunrise: string;
+  sunset: string;
+  moonMeta: ReturnType<typeof moonMeta>;
   t: { raw: number | null; value: number | null; unit: string; src: string };
   f: { raw: number | null; value: number | null; unit: string; src: string };
   hi: { raw: number | null; value: number | null; unit: string; src: string };
@@ -827,6 +1343,8 @@ interface RenderCtx {
   uvm: ReturnType<typeof uvMeta>;
   pm: number | null;
   pmm: ReturnType<typeof pm25Meta>;
+  aqiVal: number | null;
+  aqim: ReturnType<typeof aqiMeta>;
   trend: ReturnType<typeof pressureTrendMeta>;
   bf: number | null;
   tempUnit: string;

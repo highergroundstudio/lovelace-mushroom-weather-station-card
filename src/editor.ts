@@ -2,8 +2,17 @@
  * Mushroom Weather Station Card — visual editor
  */
 import { CARD_TYPE, DEFAULT_SECTION_ORDER, EDITOR_FIELDS, SECTION_LABELS } from "./const";
-import { applyPrefix, esc, moveSection, normalizeSectionOrder } from "./helpers";
-import type { CardConfig, HomeAssistant, SectionId } from "./types";
+import {
+  applyPrefix,
+  displayThresholdValue,
+  esc,
+  moveSection,
+  moveSectionTo,
+  normalizeSectionOrder,
+  storeThresholdValue,
+  thresholdEditorUnit,
+} from "./helpers";
+import type { CardConfig, HomeAssistant, SectionId, UnitSystem } from "./types";
 import { CARD_VERSION as FALLBACK_VERSION } from "./version";
 
 const CARD_VERSION =
@@ -39,6 +48,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   private _loaded = false;
   private _built = false;
   private _tab: "layout" | "entities" | "display" | "order" = "layout";
+  private _dragFrom: number | null = null;
 
   setConfig(config: CardConfig): void {
     this._config = { entities: {}, layout: "full", labels: {}, units: {}, ...config };
@@ -66,6 +76,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     this.dispatchEvent(new CustomEvent("config-changed", { detail: { config: next }, bubbles: true, composed: true }));
   }
 
+  private _unitSystem(): UnitSystem {
+    return this._config.unit_system || "native";
+  }
+
   private _setField(key: string, value: unknown, section?: string): void {
     const next: CardConfig = {
       ...this._config,
@@ -85,6 +99,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (
       key === "show_empty" ||
       key === "show_forecast" ||
+      key === "show_hourly_forecast" ||
+      key === "show_history_sparklines" ||
+      key === "show_wind_rose" ||
+      key === "show_alerts" ||
       key === "tablet_mode" ||
       key === "show_updated" ||
       key === "show_beaufort" ||
@@ -93,33 +111,38 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       (next as Record<string, unknown>)[key] = !!value;
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...(next.thresholds || {}) };
+      const system = this._unitSystem();
       if (key === "uv_purple_above") {
         const n = value === "" ? NaN : Number(value);
         thresholds.uv = Number.isFinite(n) ? [{ above: n, color: "purple" }] : [];
       } else {
-        const n = value === "" ? NaN : Number(value);
-        thresholds.temperature = Number.isFinite(n) ? [{ below: n, color: "blue" }] : [];
+        const displayed = value === "" ? NaN : Number(value);
+        const stored = Number.isFinite(displayed)
+          ? storeThresholdValue(displayed, "temp", system === "native" ? "imperial" : system)
+          : NaN;
+        thresholds.temperature = Number.isFinite(stored) ? [{ below: stored, color: "blue" }] : [];
         thresholds.feels_like = thresholds.temperature;
+        // Persist imperial so re-display does not double-convert metric inputs.
+        (next as Record<string, unknown>)[key] = Number.isFinite(stored) ? stored : value;
       }
       next.thresholds = thresholds;
-      (next as Record<string, unknown>)[key] = value;
-    } else if (key === "stale_minutes" || key === "forecast_days" || key === "battery_warning_threshold") {
+      if (key === "uv_purple_above") (next as Record<string, unknown>)[key] = value;
+    } else if (
+      key === "stale_minutes" ||
+      key === "forecast_days" ||
+      key === "hourly_forecast_hours" ||
+      key === "history_hours" ||
+      key === "battery_warning_threshold" ||
+      key === "rain_month_normal"
+    ) {
       const n = value === "" ? undefined : Number(value);
       (next as Record<string, unknown>)[key] = Number.isFinite(n as number) ? n : value;
     } else {
       (next as Record<string, unknown>)[key] = value;
     }
-    // Refresh only entities that matched the previous prefix; keep true overrides.
     if (key === "prefix") {
       next.entities = applyPrefix(next, this._config.prefix).entities;
     }
-    this._fire(next);
-    void this._render();
-  }
-
-  private _reorder(index: number, direction: -1 | 1): void {
-    const order = normalizeSectionOrder(this._config.section_order);
-    const next = { ...this._config, section_order: moveSection(order, index, direction) };
     this._fire(next);
     void this._render();
   }
@@ -140,6 +163,20 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     const pickerReady = !!customElements.get("ha-entity-picker");
     const tab = this._tab || "layout";
     const order = normalizeSectionOrder(c.section_order);
+    const system = this._unitSystem();
+    const tempUnit = thresholdEditorUnit("temp", system === "native" ? "imperial" : system);
+    // Prefer the blue threshold rule (always imperial); fall back to first cutoff / temp_blue_below.
+    const storedTempBlue = Number(
+      c.thresholds?.temperature?.find((r) => r.color === "blue" && r.below != null)?.below
+        ?? c.thresholds?.temperature?.find((r) => r.below != null)?.below
+        ?? c.temp_blue_below
+        ?? 32,
+    );
+    const displayTempBlue = displayThresholdValue(
+      Number.isFinite(storedTempBlue) ? storedTempBlue : 32,
+      "temp",
+      system === "native" ? "imperial" : system,
+    );
 
     this.shadowRoot!.innerHTML = `
       <style>
@@ -173,14 +210,19 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         .order-list { display: grid; gap: 6px; }
         .order-row {
           display: grid;
-          grid-template-columns: 1fr auto auto;
+          grid-template-columns: 28px 1fr auto auto;
           gap: 8px;
           align-items: center;
-          padding: 8px 10px;
+          padding: 10px 12px;
           border: 1px solid var(--divider-color);
           border-radius: 10px;
           background: var(--secondary-background-color, rgba(0,0,0,0.04));
+          cursor: grab;
+          user-select: none;
         }
+        .order-row.dragging { opacity: 0.45; }
+        .order-row.drag-over { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px var(--primary-color); }
+        .order-row .handle { color: var(--secondary-text-color); font-size: 16px; letter-spacing: -1px; }
         .order-row .name { font-size: 13px; font-weight: 600; }
         .order-row button {
           border: 1px solid var(--divider-color);
@@ -226,7 +268,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <select data-key="layout">
               <option value="full" ${c.layout === "full" || !c.layout ? "selected" : ""}>Full station</option>
               <option value="compact" ${c.layout === "compact" ? "selected" : ""}>Compact</option>
-              <option value="chips" ${c.layout === "chips" ? "selected" : ""}>Chips strip</option>
+              <option value="chips" ${c.layout === "chips" ? "selected" : ""}>Chips glance bar</option>
             </select>
           </label>
         </div>
@@ -245,11 +287,25 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
           <label class="field">Forecast days
             <input data-key="forecast_days" type="number" min="1" max="7" value="${esc(c.forecast_days ?? "5")}" placeholder="5" />
           </label>
+          <label class="field">Hourly hours
+            <input data-key="hourly_forecast_hours" type="number" min="6" max="24" value="${esc(c.hourly_forecast_hours ?? "24")}" placeholder="24" />
+          </label>
+        </div>
+        <div class="row">
           <label class="field">Stale after (minutes)
             <input data-key="stale_minutes" type="number" min="0" value="${esc(c.stale_minutes ?? "30")}" placeholder="30" />
           </label>
+          <label class="field">History window (hours)
+            <input data-key="history_hours" type="number" min="6" max="48" value="${esc(c.history_hours ?? "24")}" placeholder="24" />
+          </label>
         </div>
+        <label class="field">Rain month normal
+          <input data-key="rain_month_normal" type="number" min="0" step="0.01" value="${esc(c.rain_month_normal ?? "")}" placeholder="e.g. 2.5" />
+        </label>
         <div id="weather-picker"></div>
+        <div id="alert-picker"></div>
+        <div id="sun-picker"></div>
+        <div id="moon-picker"></div>
         <h3>Sections</h3>
         <p class="help">Off = show the section when it has data. On = hide it even if sensors exist.</p>
         <div id="section-switches" class="switch-list"></div>
@@ -264,19 +320,20 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <input data-key="uv_purple_above" type="number" value="${esc(c.uv_purple_above ?? "8")}" placeholder="8" />
           </label>
         </div>
-        <label class="field">Temperature blue at / below
-          <input data-key="temp_blue_below" type="number" value="${esc(c.temp_blue_below ?? "32")}" placeholder="32" />
+        <label class="field">Temperature blue at / below (${esc(tempUnit)})
+          <input data-key="temp_blue_below" type="number" value="${esc(Number(displayTempBlue.toFixed(1)))}" placeholder="${tempUnit === "°C" ? "0" : "32"}" />
         </label>
-        <p class="help">Per-slot labels and units are under Entities. Advanced <code>thresholds</code> and <code>actions</code> stay in YAML.</p>
+        <p class="help">Threshold cutoffs follow the selected unit system (${esc(system)}). Stored rules stay compatible with imperial defaults. Per-slot labels and units are under Entities.</p>
       `;
     } else if (tab === "order") {
       body.innerHTML = `
-        <p class="help">Drag-free reorder: move sections up or down. Hidden sections stay in place but do not render.</p>
+        <p class="help">Drag sections to reorder, or use ↑ / ↓. Hidden sections stay listed but do not render.</p>
         <div class="order-list" id="order-list">
           ${order
             .map(
               (id, index) => `
-            <div class="order-row" data-index="${index}">
+            <div class="order-row" draggable="true" data-index="${index}">
+              <div class="handle" aria-hidden="true">⠿</div>
               <div class="name">${index + 1}. ${esc(SECTION_LABELS[id])}</div>
               <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
               <button type="button" data-move="down" data-index="${index}" ${index === order.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
@@ -286,11 +343,39 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         </div>
         <button type="button" id="reset-order" style="margin-top:8px;border:1px solid var(--divider-color);background:transparent;color:var(--primary-text-color);border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;">Reset to default order</button>
       `;
+      const rows = [...body.querySelectorAll(".order-row")] as HTMLElement[];
+      rows.forEach((row) => {
+        row.addEventListener("dragstart", () => {
+          this._dragFrom = Number(row.dataset.index);
+          row.classList.add("dragging");
+        });
+        row.addEventListener("dragend", () => {
+          this._dragFrom = null;
+          rows.forEach((r) => r.classList.remove("dragging", "drag-over"));
+        });
+        row.addEventListener("dragover", (ev) => {
+          ev.preventDefault();
+          row.classList.add("drag-over");
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+        row.addEventListener("drop", (ev) => {
+          ev.preventDefault();
+          row.classList.remove("drag-over");
+          const to = Number(row.dataset.index);
+          const from = this._dragFrom;
+          if (from == null || Number.isNaN(to) || from === to) return;
+          const nextOrder = moveSectionTo(order, from, to);
+          this._fire({ ...this._config, section_order: nextOrder });
+          void this._render();
+        });
+      });
       body.querySelectorAll("[data-move]").forEach((btn) => {
-        btn.addEventListener("click", () => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
           const index = Number((btn as HTMLElement).dataset.index);
           const dir = (btn as HTMLElement).dataset.move === "up" ? -1 : 1;
-          this._reorder(index, dir as -1 | 1);
+          this._fire({ ...this._config, section_order: moveSection(order, index, dir as -1 | 1) });
+          void this._render();
         });
       });
       body.querySelector("#reset-order")?.addEventListener("click", () => {
@@ -313,44 +398,32 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       this._fillSwitches("options-switches", [
         { key: "tablet_mode", title: "Tablet mode", help: "Tap does nothing. Hold a tile for more-info." },
         { key: "show_empty", title: "Show empty tiles", help: "Keep tiles visible when the entity is missing." },
-        { key: "show_forecast", title: "Show forecast row", help: "Needs a weather entity below." },
+        { key: "show_forecast", title: "Show daily forecast", help: "Needs a weather entity below." },
+        { key: "show_hourly_forecast", title: "Show hourly forecast", help: "12–24h strip with precip % and temp." },
+        { key: "show_history_sparklines", title: "History sparklines", help: "Mini charts on temp, humidity, wind, pressure." },
+        { key: "show_wind_rose", title: "Wind rose", help: "Direction distribution from history." },
+        { key: "show_alerts", title: "Weather alerts banner", help: "From weather attributes or alert entity." },
         { key: "show_updated", title: "Show last updated", help: "Status chip with relative update time." },
         { key: "show_beaufort", title: "Show Beaufort scale", help: "Add Beaufort number on the wind speed tile." },
       ]);
       this._fillSwitches("section-switches", [
         { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
-        { key: "hide_wind", title: "Hide wind", help: "Compass, speed, gust, max gust" },
-        { key: "hide_rain", title: "Hide rain", help: "Sparkline and rain totals" },
-        { key: "hide_sun", title: "Hide sun", help: "UV, solar, light" },
-        { key: "hide_soil", title: "Hide soil", help: "Soil moisture channels 1–4" },
+        { key: "hide_wind", title: "Hide wind", help: "Compass, rose, speed, gust, max gust" },
+        { key: "hide_rain", title: "Hide rain", help: "Goals, sparkline, and rain totals" },
+        { key: "hide_sun", title: "Hide sun & moon", help: "UV, solar, light, sunrise/sunset, moon" },
+        { key: "hide_soil", title: "Hide soil", help: "Moisture/temp channels 1–8 and leaf wetness" },
         { key: "hide_lightning", title: "Hide lightning", help: "Strike count, distance, last strike" },
-        { key: "hide_air", title: "Hide air quality", help: "PM2.5 tile" },
+        { key: "hide_air", title: "Hide air quality", help: "PM2.5, AQI, VOC, noise" },
         { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
         { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" },
       ]);
     }
 
     if (tab === "layout" && pickerReady && this._hass) {
-      const host = this.shadowRoot!.getElementById("weather-picker");
-      if (host) {
-        const picker = document.createElement("ha-entity-picker") as HTMLElement & {
-          hass: HomeAssistant;
-          label: string;
-          value: string;
-          allowCustomEntity: boolean;
-          includeDomains: string[];
-        };
-        picker.hass = this._hass;
-        picker.label = "Forecast weather entity";
-        picker.value = c.weather_entity || "";
-        picker.allowCustomEntity = true;
-        picker.includeDomains = ["weather"];
-        picker.addEventListener("value-changed", (ev) => {
-          ev.stopPropagation();
-          this._setField("weather_entity", (ev as CustomEvent).detail?.value || "");
-        });
-        host.appendChild(picker);
-      }
+      this._mountPicker("weather-picker", "Forecast weather entity", c.weather_entity || "", ["weather"], "weather_entity");
+      this._mountPicker("alert-picker", "Alert entity (optional)", c.alert_entity || "", ["sensor", "binary_sensor", "event"], "alert_entity");
+      this._mountPicker("sun-picker", "Sun entity", c.sun_entity || "sun.sun", ["sun"], "sun_entity");
+      this._mountPicker("moon-picker", "Moon entity (optional)", c.moon_entity || "", ["sensor"], "moon_entity");
     }
 
     if (tab !== "entities" || !pickerReady || !this._hass) {
@@ -407,6 +480,34 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     this._built = true;
   }
 
+  private _mountPicker(
+    hostId: string,
+    label: string,
+    value: string,
+    domains: string[],
+    key: string,
+  ): void {
+    const host = this.shadowRoot!.getElementById(hostId);
+    if (!host || !this._hass) return;
+    const picker = document.createElement("ha-entity-picker") as HTMLElement & {
+      hass: HomeAssistant;
+      label: string;
+      value: string;
+      allowCustomEntity: boolean;
+      includeDomains: string[];
+    };
+    picker.hass = this._hass;
+    picker.label = label;
+    picker.value = value;
+    picker.allowCustomEntity = true;
+    picker.includeDomains = domains;
+    picker.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      this._setField(key, (ev as CustomEvent).detail?.value || "");
+    });
+    host.appendChild(picker);
+  }
+
   private _fillSwitches(hostId: string, items: Array<{ key: string; title: string; help?: string }>): void {
     const host = this.shadowRoot!.getElementById(hostId);
     if (!host) return;
@@ -425,8 +526,19 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         sw.style.height = "20px";
         sw.style.flexShrink = "0";
       }
-      if (item.key === "show_updated") {
-        sw.checked = this._config.show_updated !== false;
+      const defaultsOn = new Set([
+        "show_updated",
+        "show_history_sparklines",
+        "show_wind_rose",
+        "show_alerts",
+      ]);
+      if (item.key === "show_hourly_forecast") {
+        // Match card: unset + weather_entity ⇒ on; explicit false ⇒ off.
+        const raw = this._config.show_hourly_forecast;
+        sw.checked = raw === false ? false : raw === true ? true : !!this._config.weather_entity;
+      } else if (defaultsOn.has(item.key)) {
+        const raw = (this._config as Record<string, unknown>)[item.key];
+        sw.checked = raw !== false;
       } else {
         sw.checked = !!(this._config as Record<string, unknown>)[item.key];
       }
