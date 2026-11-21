@@ -221,9 +221,15 @@ function beaufort(mph) {
 }
 function applyPrefix(config, previousPrefix) {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
-  if (!prefix) return { ...config };
   const prev = "".trim().replace(/^sensor\./, "").replace(/_+$/, "");
   const entities = { ...config.entities || {} };
+  if (!prefix) {
+    if (!prev) return { ...config };
+    for (const [key, template] of Object.entries(PREFIX_MAP)) {
+      if (entities[key] === template.replace("{p}", prev)) delete entities[key];
+    }
+    return { ...config, entities };
+  }
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
     const derived = template.replace("{p}", prefix);
     const current = entities[key];

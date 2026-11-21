@@ -94,6 +94,23 @@ describe("prefix and section order", () => {
       entities: { temperature: "sensor.outdoor_temperature" },
     });
     expect(untouched.entities?.temperature).toBe("sensor.outdoor_temperature");
+
+    // Clear then re-prefix: derived IDs are removed on clear, then refilled.
+    const cleared = applyPrefix(
+      {
+        prefix: "",
+        entities: {
+          temperature: "sensor.ws_temperature",
+          humidity: "sensor.custom_outside_rh",
+        },
+      },
+      "ws",
+    );
+    expect(cleared.entities?.temperature).toBeUndefined();
+    expect(cleared.entities?.humidity).toBe("sensor.custom_outside_rh");
+    const afterClear = applyPrefix({ prefix: "station", entities: { ...cleared.entities } });
+    expect(afterClear.entities?.temperature).toBe("sensor.station_temperature");
+    expect(afterClear.entities?.humidity).toBe("sensor.custom_outside_rh");
   });
 
   it("normalizes and moves section order", () => {

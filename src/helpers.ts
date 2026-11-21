@@ -92,9 +92,19 @@ export function beaufort(mph: number | null | undefined): number | null {
 
 export function applyPrefix(config: CardConfig, previousPrefix?: string): CardConfig {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
-  if (!prefix) return { ...config };
   const prev = (previousPrefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   const entities = { ...(config.entities || {}) };
+
+  // Clearing the prefix: drop only IDs that exactly match the previous template
+  // so a later prefix can fill empty slots without leaving stale station IDs.
+  if (!prefix) {
+    if (!prev) return { ...config };
+    for (const [key, template] of Object.entries(PREFIX_MAP)) {
+      if (entities[key] === template.replace("{p}", prev)) delete entities[key];
+    }
+    return { ...config, entities };
+  }
+
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
     const derived = template.replace("{p}", prefix);
     const current = entities[key];
