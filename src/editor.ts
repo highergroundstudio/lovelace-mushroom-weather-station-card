@@ -165,9 +165,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     const order = normalizeSectionOrder(c.section_order);
     const system = this._unitSystem();
     const tempUnit = thresholdEditorUnit("temp", system === "native" ? "imperial" : system);
-    // Prefer the threshold rule (always imperial); fall back to temp_blue_below which is also stored imperial.
+    // Prefer the blue threshold rule (always imperial); fall back to first cutoff / temp_blue_below.
     const storedTempBlue = Number(
-      c.thresholds?.temperature?.find((r) => r.below != null)?.below
+      c.thresholds?.temperature?.find((r) => r.color === "blue" && r.below != null)?.below
+        ?? c.thresholds?.temperature?.find((r) => r.below != null)?.below
         ?? c.temp_blue_below
         ?? 32,
     );

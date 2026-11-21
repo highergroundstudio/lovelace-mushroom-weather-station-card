@@ -1127,6 +1127,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   }
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
+    const prevWeather = this._config?.weather_entity || null;
     this._config = applyPrefix({
       layout: "full",
       name: "Weather Station",
@@ -1150,9 +1151,15 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       ...config,
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER)
     });
+    const nextWeather = this._config.weather_entity || null;
     this._teardownForecast(true);
     this._forecastToken++;
     this._historyToken++;
+    if (prevWeather !== nextWeather) {
+      this._forecastDays = [];
+      this._forecastHours = [];
+      this._forecastError = null;
+    }
     this._history = {};
     this._historyFetchedAt = 0;
     this._historyPending = false;
@@ -1301,6 +1308,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         this._chipsExpanded = !this._chipsExpanded;
         this._renderSignature = null;
         this._render(true);
+        this.shadowRoot?.querySelector('[data-key="__chips_expand"]')?.focus();
         return;
       }
       this._handleAction(tap, entityId);
@@ -1459,13 +1467,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
                 unsub();
               } catch {
               }
-            } else {
-              this._forecastUnsub = unsub;
-              dailySettled = true;
+              return;
             }
+            this._forecastUnsub = unsub;
+            dailySettled = true;
           }
         } catch {
         }
+        if (token !== this._forecastToken) return;
       } else if (wantDaily) {
         dailySettled = true;
       }
@@ -1486,13 +1495,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
                 unsub();
               } catch {
               }
-            } else {
-              this._hourlyUnsub = unsub;
-              hourlySettled = true;
+              return;
             }
+            this._hourlyUnsub = unsub;
+            hourlySettled = true;
           }
         } catch {
         }
+        if (token !== this._forecastToken) return;
       } else if (wantHourly) {
         hourlySettled = true;
       }
@@ -1514,7 +1524,10 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         hourlySettled = true;
       }
       if (token === this._forecastToken && dailySettled && hourlySettled) {
-        this._forecastReadyKey = subKey;
+        const entityPresent = !!entityState(this._hass, id);
+        if (entityPresent || this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length) {
+          this._forecastReadyKey = subKey;
+        }
       }
       this._renderSignature = null;
       this._render(true);
@@ -1712,7 +1725,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   _forecastHtml() {
     const hourly = this._hourlyHtml();
     const showDaily = !!this._config?.show_forecast;
-    if (!showDaily && !hourly) return "";
+    const hourlyExplicit = this._config?.show_hourly_forecast === true;
+    if (!showDaily && !hourly && !hourlyExplicit) return "";
     const id = this._config?.weather_entity;
     if (!id) {
       return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
@@ -1906,7 +1920,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       }
       case "forecast": {
         const showDaily = !!this._config?.show_forecast;
-        const showHourly = this._wantHourly();
+        const showHourly = this._wantHourly() || this._config?.show_hourly_forecast === true;
         if (!showDaily && !showHourly) return "";
         return this._wrapSection(id, compact, this._forecastHtml());
       }

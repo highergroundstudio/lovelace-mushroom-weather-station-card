@@ -310,7 +310,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     const system = this._unitSystem();
     const tempUnit = thresholdEditorUnit("temp", system === "native" ? "imperial" : system);
     const storedTempBlue = Number(
-      c.thresholds?.temperature?.find((r) => r.below != null)?.below ?? c.temp_blue_below ?? 32
+      c.thresholds?.temperature?.find((r) => r.color === "blue" && r.below != null)?.below ?? c.thresholds?.temperature?.find((r) => r.below != null)?.below ?? c.temp_blue_below ?? 32
     );
     const displayTempBlue = displayThresholdValue(
       Number.isFinite(storedTempBlue) ? storedTempBlue : 32,

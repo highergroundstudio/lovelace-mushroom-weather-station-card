@@ -156,9 +156,10 @@ describe("0.7 helpers", () => {
     expect(windRoseBins([0, 10, 180, 185]).find((b) => b.label === "N")?.count).toBe(2);
     expect(Math.round(displayThresholdValue(32, "temp", "metric"))).toBe(0);
     expect(Math.round(storeThresholdValue(0, "temp", "metric"))).toBe(32);
-    // Round-trip: displayed metric → stored imperial → displayed metric again.
-    const stored = storeThresholdValue(0, "temp", "metric");
-    expect(Math.round(displayThresholdValue(stored, "temp", "metric"))).toBe(0);
+    // Round-trip with a nonzero Celsius threshold (0°C/32°F is too easy).
+    const stored = storeThresholdValue(12.5, "temp", "metric");
+    expect(stored).toBeCloseTo(54.5, 5);
+    expect(displayThresholdValue(stored, "temp", "metric")).toBeCloseTo(12.5, 5);
   });
 });
 
