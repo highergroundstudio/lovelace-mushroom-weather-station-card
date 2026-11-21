@@ -1173,6 +1173,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   disconnectedCallback() {
     this._forecastToken++;
     this._historyToken++;
+    this._historyPending = false;
     this._teardownForecast(true);
     if (this._staleTimer) {
       window.clearInterval(this._staleTimer);
@@ -1531,8 +1532,6 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     if (!needSparks && !needRose) return;
     if (this._historyPending) return;
     if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1e3) return;
-    this._historyPending = true;
-    const token = ++this._historyToken;
     const hours = this._historyHours();
     const end = /* @__PURE__ */ new Date();
     const start = new Date(end.getTime() - hours * 3600 * 1e3);
@@ -1556,6 +1555,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     const unique = [...new Set(entityIds)];
     if (!unique.length) return;
+    this._historyPending = true;
+    const token = ++this._historyToken;
     try {
       let raw;
       if (this._hass.connection?.sendMessagePromise) {

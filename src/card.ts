@@ -168,6 +168,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   disconnectedCallback(): void {
     this._forecastToken++;
     this._historyToken++;
+    this._historyPending = false;
     this._teardownForecast(true);
     if (this._staleTimer) {
       window.clearInterval(this._staleTimer);
@@ -564,8 +565,6 @@ class MushroomWeatherStationCard extends HTMLElement {
     if (this._historyPending) return;
     if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1000) return;
 
-    this._historyPending = true;
-    const token = ++this._historyToken;
     const hours = this._historyHours();
     const end = new Date();
     const start = new Date(end.getTime() - hours * 3600 * 1000);
@@ -589,7 +588,11 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
     }
     const unique = [...new Set(entityIds)];
+    // No mapped entities — do not latch pending (there is no try/finally below).
     if (!unique.length) return;
+
+    this._historyPending = true;
+    const token = ++this._historyToken;
 
     try {
       let raw: unknown;

@@ -75,6 +75,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          need_push=false
+          # Commit stamp/build first so rebase is not blocked by a dirty tree.
+          git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Release v${VER} (auto)"
+            need_push=true
+          fi
           git fetch origin main
           # Integrate newer main commits instead of force-pushing.
           if ! git merge-base --is-ancestor HEAD origin/main; then
@@ -83,10 +90,13 @@ jobs:
             bash scripts/set-version.sh "$VER"
             npm test
             npm run build
+            git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
+            if ! git diff --cached --quiet; then
+              git commit -m "Release v${VER} (auto rebuild)"
+            fi
+            need_push=true
           fi
-          git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
-          if ! git diff --cached --quiet; then
-            git commit -m "Release v${VER} (auto)"
+          if [[ "$need_push" == "true" ]]; then
             if ! git push origin HEAD:main; then
               echo "Push to main failed (branch advanced). Re-run after integrating latest main." >&2
               exit 1
