@@ -690,12 +690,16 @@ const CARD_STYLES = `
     .grid, .wind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .wind-row { grid-template-columns: 1fr; }
     .header {
-      flex-wrap: wrap;
+      flex-direction: column;
       align-items: flex-start;
       gap: 8px;
     }
+    .header-main {
+      flex: none;
+      width: 100%;
+      min-width: 0;
+    }
     .status-chip {
-      order: 3;
       width: fit-content;
       max-width: 100%;
     }
