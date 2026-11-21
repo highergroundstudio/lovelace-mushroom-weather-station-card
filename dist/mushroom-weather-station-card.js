@@ -1100,7 +1100,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
-    this._forecastFetchedKey = null;
+    this._forecastPending = false;
+    this._forecastReadyKey = null;
     this._chipsExpanded = false;
   }
   static getStubConfig() {
@@ -1149,8 +1150,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       ...config,
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER)
     });
-    this._forecastSubId = null;
-    this._forecastFetchedKey = null;
+    this._teardownForecast(true);
     this._forecastToken++;
     this._historyToken++;
     this._history = {};
@@ -1173,8 +1173,13 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   disconnectedCallback() {
     this._forecastToken++;
     this._historyToken++;
-    this._forecastSubId = null;
-    this._forecastFetchedKey = null;
+    this._teardownForecast(true);
+    if (this._staleTimer) {
+      window.clearInterval(this._staleTimer);
+      this._staleTimer = null;
+    }
+  }
+  _teardownForecast(clearReady) {
     if (this._forecastUnsub) {
       try {
         this._forecastUnsub();
@@ -1189,10 +1194,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       }
       this._hourlyUnsub = null;
     }
-    if (this._staleTimer) {
-      window.clearInterval(this._staleTimer);
-      this._staleTimer = null;
-    }
+    this._forecastSubId = null;
+    this._forecastPending = false;
+    if (clearReady) this._forecastReadyKey = null;
   }
   getCardSize() {
     const layout = this._config?.layout || "full";
@@ -1409,124 +1413,113 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const wantHourly = this._wantHourly();
     const id = wantDaily || wantHourly ? this._config?.weather_entity : null;
     if (!id || !this._hass) {
-      if (this._forecastUnsub) {
-        try {
-          this._forecastUnsub();
-        } catch {
-        }
-        this._forecastUnsub = null;
-      }
-      if (this._hourlyUnsub) {
-        try {
-          this._hourlyUnsub();
-        } catch {
-        }
-        this._hourlyUnsub = null;
-      }
-      this._forecastSubId = null;
+      this._teardownForecast(true);
       return;
     }
     const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
+    if (this._forecastReadyKey === subKey) return;
+    if (this._forecastPending && this._forecastSubId === subKey) return;
     if (this._forecastSubId === subKey) {
-      const canSubscribe = !!this._hass.connection?.subscribeMessage;
-      if (canSubscribe) {
-        const dailyReady = !wantDaily || !!this._forecastUnsub;
-        const hourlyReady = !wantHourly || !!this._hourlyUnsub;
-        if (dailyReady && hourlyReady) return;
-      } else if (this._forecastFetchedKey === subKey) {
+      const dailyOk = !wantDaily || !!this._forecastUnsub;
+      const hourlyOk = !wantHourly || !!this._hourlyUnsub;
+      if (dailyOk && hourlyOk) {
+        this._forecastReadyKey = subKey;
         return;
       }
+    } else {
+      this._teardownForecast(false);
     }
-    if (this._forecastUnsub) {
-      try {
-        this._forecastUnsub();
-      } catch {
-      }
-      this._forecastUnsub = null;
-    }
-    if (this._hourlyUnsub) {
-      try {
-        this._hourlyUnsub();
-      } catch {
-      }
-      this._hourlyUnsub = null;
-    }
+    this._forecastPending = true;
     this._forecastSubId = subKey;
     const token = ++this._forecastToken;
-    this._forecastDays = [];
-    this._forecastHours = [];
     this._forecastError = null;
-    const attrDays = entityState(this._hass, id)?.attributes?.forecast;
-    if (Array.isArray(attrDays) && attrDays.length) this._forecastDays = attrDays;
-    if (wantDaily) {
-      try {
-        if (this._hass.connection?.subscribeMessage) {
-          const unsub = await this._hass.connection.subscribeMessage(
-            (ev) => {
-              if (token !== this._forecastToken) return;
-              this._forecastDays = ev?.forecast || [];
-              this._forecastError = this._forecastDays.length ? null : "empty";
-              this._renderSignature = null;
-              this._render(true);
-            },
-            { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id }
-          );
-          if (token !== this._forecastToken) {
-            try {
-              unsub();
-            } catch {
+    try {
+      const attrDays = entityState(this._hass, id)?.attributes?.forecast;
+      if (Array.isArray(attrDays) && attrDays.length && !this._forecastDays.length) {
+        this._forecastDays = attrDays;
+      }
+      let dailySettled = !wantDaily;
+      let hourlySettled = !wantHourly;
+      if (wantDaily && !this._forecastUnsub) {
+        try {
+          if (this._hass.connection?.subscribeMessage) {
+            const unsub = await this._hass.connection.subscribeMessage(
+              (ev) => {
+                if (token !== this._forecastToken) return;
+                this._forecastDays = ev?.forecast || [];
+                this._forecastError = this._forecastDays.length ? null : "empty";
+                this._renderSignature = null;
+                this._render(true);
+              },
+              { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id }
+            );
+            if (token !== this._forecastToken) {
+              try {
+                unsub();
+              } catch {
+              }
+            } else {
+              this._forecastUnsub = unsub;
+              dailySettled = true;
             }
-          } else {
-            this._forecastUnsub = unsub;
           }
+        } catch {
         }
-      } catch {
+      } else if (wantDaily) {
+        dailySettled = true;
       }
-    }
-    if (wantHourly) {
-      try {
-        if (this._hass.connection?.subscribeMessage) {
-          const unsub = await this._hass.connection.subscribeMessage(
-            (ev) => {
-              if (token !== this._forecastToken) return;
-              this._forecastHours = ev?.forecast || [];
-              this._renderSignature = null;
-              this._render(true);
-            },
-            { type: "weather/subscribe_forecast", forecast_type: "hourly", entity_id: id }
-          );
-          if (token !== this._forecastToken) {
-            try {
-              unsub();
-            } catch {
+      if (wantHourly && !this._hourlyUnsub) {
+        try {
+          if (this._hass.connection?.subscribeMessage) {
+            const unsub = await this._hass.connection.subscribeMessage(
+              (ev) => {
+                if (token !== this._forecastToken) return;
+                this._forecastHours = ev?.forecast || [];
+                this._renderSignature = null;
+                this._render(true);
+              },
+              { type: "weather/subscribe_forecast", forecast_type: "hourly", entity_id: id }
+            );
+            if (token !== this._forecastToken) {
+              try {
+                unsub();
+              } catch {
+              }
+            } else {
+              this._hourlyUnsub = unsub;
+              hourlySettled = true;
             }
-          } else {
-            this._hourlyUnsub = unsub;
           }
+        } catch {
         }
-      } catch {
+      } else if (wantHourly) {
+        hourlySettled = true;
       }
-    }
-    if (!this._forecastDays.length && wantDaily) {
-      const days = await this._fetchForecastType(id, "daily", token);
-      if (token !== this._forecastToken) return;
-      if (days.length) {
-        this._forecastDays = days;
-        this._forecastError = null;
-      } else if (!this._forecastDays.length) {
-        this._forecastError = "empty";
+      if (wantDaily && !this._forecastUnsub) {
+        const days = await this._fetchForecastType(id, "daily", token);
+        if (token !== this._forecastToken) return;
+        if (days.length) {
+          this._forecastDays = days;
+          this._forecastError = null;
+        } else if (!this._forecastDays.length) {
+          this._forecastError = "empty";
+        }
+        dailySettled = true;
       }
+      if (wantHourly && !this._hourlyUnsub) {
+        const hours = await this._fetchForecastType(id, "hourly", token);
+        if (token !== this._forecastToken) return;
+        if (hours.length) this._forecastHours = hours;
+        hourlySettled = true;
+      }
+      if (token === this._forecastToken && dailySettled && hourlySettled) {
+        this._forecastReadyKey = subKey;
+      }
+      this._renderSignature = null;
+      this._render(true);
+    } finally {
+      if (token === this._forecastToken) this._forecastPending = false;
     }
-    if (!this._forecastHours.length && wantHourly) {
-      const hours = await this._fetchForecastType(id, "hourly", token);
-      if (token !== this._forecastToken) return;
-      if (hours.length) this._forecastHours = hours;
-    }
-    if (token === this._forecastToken) {
-      if (!this._hass.connection?.subscribeMessage) this._forecastFetchedKey = subKey;
-    }
-    this._renderSignature = null;
-    this._render(true);
   }
   _historyHours() {
     return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
