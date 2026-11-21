@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — 2026-11-21
+
+Insight surfaces for history and atmosphere.
+
+- **Record book** — month/year extremes (hottest, coldest, peak gust, peak rain rate, wettest day) from HA history, with “Set today” badges
+- **Precipitation timeline** — rain-rate intensity bars in the rain section (`show_precip_timeline`)
+- **Comfort zones** — hours in a configurable temp×humidity band plus scatter plot (`show_comfort`, comfort_* options)
+- **Seasonal skins** — soft HA-token accents by meteorological season and weather condition (`seasonal_skins`, `hemisphere`)
+
 ## 0.7.0 — 2026-11-21
 
 Station dashboard upgrade.

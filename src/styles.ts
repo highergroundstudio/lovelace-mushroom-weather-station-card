@@ -457,6 +457,150 @@ export const CARD_STYLES = `
     line-height: 1.4;
   }
 
+  .precip-timeline {
+    margin: 0 0 10px;
+    padding: 10px 12px 8px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+    color: var(--mws-primary);
+  }
+  .precip-timeline-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--primary-text-color);
+    margin-bottom: 6px;
+  }
+  .precip-timeline-meta {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+    font-weight: 500;
+  }
+  .precip-timeline-svg { display: block; color: var(--mws-primary); }
+
+  .records-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: var(--mws-gap);
+  }
+  .record-tile {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+    text-align: left;
+  }
+  .record-tile.set {
+    border-color: color-mix(in srgb, var(--mws-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--mws-accent) 12%, transparent);
+  }
+  .record-label {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .record-value {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+  .record-when {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+  }
+  .record-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin-top: 2px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    background: color-mix(in srgb, var(--mws-accent) 22%, transparent);
+    color: var(--primary-text-color);
+  }
+
+  .comfort-panel {
+    display: grid;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+  }
+  .comfort-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .comfort-title { font-size: 13px; font-weight: 650; }
+  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--primary-text-color); }
+  .comfort-track {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--mws-surface-strong);
+    overflow: hidden;
+  }
+  .comfort-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--mws-primary), var(--mws-accent));
+  }
+  .comfort-meta {
+    font-size: 12px;
+    color: var(--secondary-text-color);
+  }
+  .comfort-scatter {
+    display: block;
+    color: var(--mws-primary);
+    margin-top: 2px;
+  }
+  .comfort-axes {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--secondary-text-color);
+  }
+
+  /* Seasonal skins — soft HA-token accents by season / condition */
+  ha-card.skin-spring {
+    --mws-primary: var(--green-color, #66bb6a);
+    --mws-accent: var(--teal-color, #26a69a);
+  }
+  ha-card.skin-summer {
+    --mws-primary: var(--amber-color, #ffca28);
+    --mws-accent: var(--orange-color, #ff9800);
+  }
+  ha-card.skin-autumn {
+    --mws-primary: var(--orange-color, #ff9800);
+    --mws-accent: var(--amber-color, #ffc107);
+  }
+  ha-card.skin-winter {
+    --mws-primary: var(--blue-color, #42a5f5);
+    --mws-accent: var(--cyan-color, #26c6da);
+  }
+  ha-card.cond-rain {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--blue-color, #2196f3) 55%, transparent);
+  }
+  ha-card.cond-storm {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--purple-color, #9c27b0) 55%, transparent);
+  }
+  ha-card.cond-snow {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--cyan-color, #00bcd4) 55%, transparent);
+  }
+  ha-card.cond-clear .hero-icon {
+    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--mws-accent) 45%, transparent));
+  }
+
   @media (max-width: 520px) {
     .grid, .wind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .wind-row, .wind-row.with-rose { grid-template-columns: 1fr; }

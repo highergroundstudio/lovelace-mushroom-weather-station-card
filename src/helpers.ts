@@ -2,6 +2,7 @@ import {
   ALERT_SEVERITY_COLOR,
   CARDINALS,
   COLOR_VARS,
+  DEFAULT_COMFORT,
   DEFAULT_SECTION_ORDER,
   DEFAULT_THRESHOLDS,
   MOON_ICONS,
@@ -10,9 +11,15 @@ import {
 } from "./const";
 import type {
   CardConfig,
+  ComfortStats,
   HassEntity,
+  Hemisphere,
+  HistoryExtreme,
   HistoryPoint,
   HomeAssistant,
+  PrecipBar,
+  RecordBook,
+  Season,
   SectionId,
   ThresholdRule,
   UnitSystem,
@@ -499,12 +506,329 @@ export function formatSunTime(iso: string | undefined, locale?: string): string 
   }
 }
 
+function isNumericHistoryPoint(p: HistoryPoint): boolean {
+  return !p.unavailable && Number.isFinite(p.state);
+}
+
 export function downsampleHistory(points: HistoryPoint[], maxPoints = 36): HistoryPoint[] {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out: HistoryPoint[] = [];
-  const step = (points.length - 1) / (maxPoints - 1);
+  const step = (usable.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
-    out.push(points[Math.round(i * step)]);
+    out.push(usable[Math.round(i * step)]);
   }
   return out;
+}
+
+/** Keep the max (or min) sample in each bucket so peaks survive thinning. */
+export function downsampleHistoryExtrema(
+  points: HistoryPoint[],
+  maxPoints = 72,
+  mode: "max" | "min" = "max",
+): HistoryPoint[] {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
+  const out: HistoryPoint[] = [];
+  const bucket = usable.length / maxPoints;
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
+    let best = usable[start];
+    for (let j = start + 1; j < end && j < usable.length; j++) {
+      if (mode === "max" ? usable[j].state > best.state : usable[j].state < best.state) {
+        best = usable[j];
+      }
+    }
+    out.push(best);
+  }
+  return out;
+}
+
+export function historyExtreme(
+  points: HistoryPoint[],
+  mode: "min" | "max",
+): HistoryExtreme | null {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (!usable.length) return null;
+  let best = usable[0];
+  for (const p of usable) {
+    if (mode === "max" ? p.state > best.state : p.state < best.state) best = p;
+  }
+  return { value: best.state, at: best.last_changed };
+}
+
+export function buildRecordBook(history: Record<string, HistoryPoint[]>): RecordBook {
+  return {
+    hottest: historyExtreme(history.temperature || [], "max"),
+    coldest: historyExtreme(history.temperature || [], "min"),
+    peakGust: historyExtreme(history.wind_gust || [], "max"),
+    peakRainRate: historyExtreme(history.rain_rate || [], "max"),
+    wettestDay: historyExtreme(history.rain_today || [], "max"),
+  };
+}
+
+function sameLocalDay(a: number, b = Date.now()): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate()
+  );
+}
+
+/** True only when the extreme itself was recorded today (local calendar day). */
+export function isRecordSetToday(record: HistoryExtreme | null, now = Date.now()): boolean {
+  return !!record && Number.isFinite(record.at) && sameLocalDay(record.at, now);
+}
+
+export function precipTimelineBars(points: HistoryPoint[], hours: number, buckets = 24): PrecipBar[] {
+  const end = Date.now();
+  const start = end - hours * 3600 * 1000;
+  const span = Math.max(1, end - start);
+  const width = Math.min(48, Math.max(8, buckets));
+  const bars: PrecipBar[] = Array.from({ length: width }, (_, i) => {
+    const t0 = start + (i / width) * span;
+    const when = new Date(t0 + span / width / 2);
+    let label = "";
+    try {
+      label = when.toLocaleTimeString(undefined, { hour: "numeric" });
+    } catch {
+      label = `${when.getHours()}`;
+    }
+    return { label, value: 0, start: t0 };
+  });
+
+  // Minimal/significant history only records transitions. Apply each numeric rate
+  // until the next transition (clipped to the window). Unavailable/unknown stops
+  // the active rate so outages stay dry instead of extending the last wet value.
+  const sorted = [...points]
+    .filter((p) => p.unavailable || Number.isFinite(p.state))
+    .sort((a, b) => a.last_changed - b.last_changed);
+  if (!sorted.length) return bars;
+
+  const rateOf = (p: HistoryPoint): number | null =>
+    (p.unavailable || !Number.isFinite(p.state) ? null : p.state);
+
+  let carryIdx = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].last_changed <= start) carryIdx = i;
+    else break;
+  }
+
+  const paint = (t0: number, t1: number, rate: number) => {
+    if (!(rate > 0) || !(t1 > t0)) return;
+    const i0 = Math.max(0, Math.floor(((t0 - start) / span) * width));
+    const i1 = Math.min(width - 1, Math.floor(((Math.min(t1, end) - 1 - start) / span) * width));
+    for (let i = i0; i <= i1; i++) bars[i].value = Math.max(bars[i].value, rate);
+  };
+
+  if (carryIdx >= 0) {
+    const rate = rateOf(sorted[carryIdx]);
+    if (rate != null) {
+      const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+      paint(start, Math.min(end, t1), rate);
+    }
+  }
+  for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const rate = rateOf(sorted[i]);
+    if (rate == null) continue;
+    const t0 = Math.max(start, sorted[i].last_changed);
+    if (t0 >= end) break;
+    const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
+    paint(t0, t1, rate);
+  }
+  return bars;
+}
+
+export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): string {
+  if (!bars.length) return "";
+  const max = Math.max(...bars.map((b) => b.value), 0.01);
+  const gap = 2;
+  const barW = Math.max(2, (width - gap * (bars.length - 1)) / bars.length);
+  const rects = bars
+    .map((b, i) => {
+      const h = Math.max(b.value > 0 ? 3 : 1, (b.value / max) * (height - 8));
+      const x = i * (barW + gap);
+      const y = height - h;
+      const opacity = b.value > 0 ? 0.55 + (b.value / max) * 0.45 : 0.18;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="currentColor" opacity="${opacity.toFixed(2)}"/>`;
+    })
+    .join("");
+  return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
+}
+
+/** Advancing predecessor cursor over a sorted history series (O(n) total). */
+function advanceCursor(
+  cur: { i: number; value: number | null },
+  seriesAsc: HistoryPoint[],
+  at: number,
+): void {
+  while (cur.i + 1 < seriesAsc.length && seriesAsc[cur.i + 1].last_changed <= at) {
+    cur.i += 1;
+    const p = seriesAsc[cur.i];
+    cur.value = p.unavailable || !Number.isFinite(p.state) ? null : p.state;
+  }
+}
+
+export function comfortBandFromConfig(config: CardConfig | undefined): {
+  tempMin: number;
+  tempMax: number;
+  humidityMin: number;
+  humidityMax: number;
+} {
+  const tempMin = num(config?.comfort_temp_min);
+  const tempMax = num(config?.comfort_temp_max);
+  const humidityMin = num(config?.comfort_humidity_min);
+  const humidityMax = num(config?.comfort_humidity_max);
+  return {
+    tempMin: tempMin ?? DEFAULT_COMFORT.tempMin,
+    tempMax: tempMax ?? DEFAULT_COMFORT.tempMax,
+    humidityMin: humidityMin ?? DEFAULT_COMFORT.humidityMin,
+    humidityMax: humidityMax ?? DEFAULT_COMFORT.humidityMax,
+  };
+}
+
+export function comfortStats(
+  tempPoints: HistoryPoint[],
+  humidityPoints: HistoryPoint[],
+  band: { tempMin: number; tempMax: number; humidityMin: number; humidityMax: number },
+  window?: { start: number; end: number },
+): ComfortStats {
+  const samples: Array<{ temp: number; humidity: number }> = [];
+  const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
+  const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
+
+  // Scatter: one point per numeric temperature with humidity valid at that instant.
+  const humScatter = { i: -1, value: null as number | null };
+  for (const t of tempAsc) {
+    if (!isNumericHistoryPoint(t)) continue;
+    advanceCursor(humScatter, humidityAsc, t.last_changed);
+    if (humScatter.value == null) continue;
+    samples.push({ temp: t.state, humidity: humScatter.value });
+  }
+
+  const end = window?.end ?? Date.now();
+  let start = window?.start;
+  if (start == null || !Number.isFinite(start)) {
+    const first = Math.min(
+      tempAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+      humidityAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+    );
+    start = first;
+  }
+
+  // Duration: split at every temp and humidity transition so a humidity change
+  // mid-dwell does not keep the previous RH for the whole temp interval.
+  const breaks = new Set<number>([start, end]);
+  for (const p of tempAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  for (const p of humidityAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  const times = [...breaks].sort((a, b) => a - b);
+
+  const tempCur = { i: -1, value: null as number | null };
+  const humCur = { i: -1, value: null as number | null };
+  let hoursIn = 0;
+  let hoursTotal = 0;
+  for (let i = 0; i < times.length - 1; i++) {
+    const t0 = times[i];
+    const t1 = times[i + 1];
+    if (!(t1 > t0)) continue;
+    advanceCursor(tempCur, tempAsc, t0);
+    advanceCursor(humCur, humidityAsc, t0);
+    if (tempCur.value == null || humCur.value == null) continue;
+    const dtHr = (t1 - t0) / 3600000;
+    hoursTotal += dtHr;
+    const ok =
+      tempCur.value >= band.tempMin
+      && tempCur.value <= band.tempMax
+      && humCur.value >= band.humidityMin
+      && humCur.value <= band.humidityMax;
+    if (ok) hoursIn += dtHr;
+  }
+
+  const pct = hoursTotal > 0 ? Math.round((hoursIn / hoursTotal) * 100) : null;
+  return { hoursIn, hoursTotal, pct, samples };
+}
+
+export function comfortScatterSvg(
+  samples: Array<{ temp: number; humidity: number }>,
+  band: { tempMin: number; tempMax: number; humidityMin: number; humidityMax: number },
+  width = 220,
+  height = 96,
+): string {
+  if (!samples.length) return "";
+  const temps = samples.map((s) => s.temp);
+  const hums = samples.map((s) => s.humidity);
+  const minT = Math.min(...temps, band.tempMin) - 2;
+  const maxT = Math.max(...temps, band.tempMax) + 2;
+  const minH = Math.min(...hums, band.humidityMin) - 5;
+  const maxH = Math.max(...hums, band.humidityMax) + 5;
+  const pad = 8;
+  const x = (t: number) => pad + ((t - minT) / Math.max(0.01, maxT - minT)) * (width - pad * 2);
+  const y = (h: number) => height - pad - ((h - minH) / Math.max(0.01, maxH - minH)) * (height - pad * 2);
+  const zoneX = x(band.tempMin);
+  const zoneY = y(band.humidityMax);
+  const zoneW = Math.max(4, x(band.tempMax) - zoneX);
+  const zoneH = Math.max(4, y(band.humidityMin) - zoneY);
+  // Uniform sample across the full window (not the newest N) so the plot
+  // matches hours-in-band coverage on dense PWS histories.
+  const plotted = samples.length <= 80
+    ? samples
+    : Array.from({ length: 80 }, (_, i) => {
+      const step = (samples.length - 1) / 79;
+      return samples[Math.round(i * step)];
+    });
+  const dots = plotted
+    .map((s) => {
+      const inBand =
+        s.temp >= band.tempMin
+        && s.temp <= band.tempMax
+        && s.humidity >= band.humidityMin
+        && s.humidity <= band.humidityMax;
+      return `<circle cx="${x(s.temp).toFixed(1)}" cy="${y(s.humidity).toFixed(1)}" r="2.2" fill="currentColor" opacity="${inBand ? 0.9 : 0.35}"/>`;
+    })
+    .join("");
+  return `<svg class="comfort-scatter" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" aria-hidden="true">
+    <rect x="${zoneX.toFixed(1)}" y="${zoneY.toFixed(1)}" width="${zoneW.toFixed(1)}" height="${zoneH.toFixed(1)}" fill="currentColor" opacity="0.12" rx="4"/>
+    ${dots}
+  </svg>`;
+}
+
+/** Meteorological seasons (Mar–May spring in the northern hemisphere). */
+export function currentSeason(date = new Date(), hemisphere: Hemisphere = "north"): Season {
+  const m = date.getMonth();
+  let season: Season;
+  if (m >= 2 && m <= 4) season = "spring";
+  else if (m >= 5 && m <= 7) season = "summer";
+  else if (m >= 8 && m <= 10) season = "autumn";
+  else season = "winter";
+  if (hemisphere === "south") {
+    const flip: Record<Season, Season> = {
+      spring: "autumn",
+      summer: "winter",
+      autumn: "spring",
+      winter: "summer",
+    };
+    return flip[season];
+  }
+  return season;
+}
+
+export function seasonalSkinClasses(
+  season: Season,
+  condition?: string | null,
+): string {
+  const cond = String(condition || "").toLowerCase();
+  let condClass = "";
+  if (cond.includes("snow")) condClass = "cond-snow";
+  else if (cond.includes("lightning") || cond.includes("thunder")) condClass = "cond-storm";
+  else if (cond.includes("rain") || cond.includes("pour") || cond.includes("hail")) condClass = "cond-rain";
+  else if (cond === "sunny" || cond === "clear-night" || cond.includes("clear")) condClass = "cond-clear";
+  else if (cond.includes("cloud") || cond.includes("fog")) condClass = "cond-cloud";
+  return `skin-${season}${condClass ? ` ${condClass}` : ""}`;
 }

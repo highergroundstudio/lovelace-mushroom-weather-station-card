@@ -72,6 +72,8 @@ const DEFAULT_SECTION_ORDER = [
   "lightning",
   "air",
   "station",
+  "records",
+  "comfort",
   "forecast",
   "battery"
 ];
@@ -84,8 +86,16 @@ const SECTION_LABELS = {
   lightning: "Lightning",
   air: "Air quality",
   station: "Station",
+  records: "Record book",
+  comfort: "Comfort",
   forecast: "Forecast",
   battery: "Battery"
+};
+const DEFAULT_COMFORT = {
+  tempMin: 65,
+  tempMax: 78,
+  humidityMin: 30,
+  humidityMax: 60
 };
 const DEFAULT_THRESHOLDS = {
   temperature: [
@@ -594,14 +604,245 @@ function formatSunTime(iso, locale) {
     return d.toLocaleTimeString();
   }
 }
+function isNumericHistoryPoint(p) {
+  return !p.unavailable && Number.isFinite(p.state);
+}
 function downsampleHistory(points, maxPoints = 36) {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out = [];
-  const step = (points.length - 1) / (maxPoints - 1);
+  const step = (usable.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
-    out.push(points[Math.round(i * step)]);
+    out.push(usable[Math.round(i * step)]);
   }
   return out;
+}
+function downsampleHistoryExtrema(points, maxPoints = 72, mode = "max") {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
+  const out = [];
+  const bucket = usable.length / maxPoints;
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
+    let best = usable[start];
+    for (let j = start + 1; j < end && j < usable.length; j++) {
+      if (mode === "max" ? usable[j].state > best.state : usable[j].state < best.state) {
+        best = usable[j];
+      }
+    }
+    out.push(best);
+  }
+  return out;
+}
+function historyExtreme(points, mode) {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (!usable.length) return null;
+  let best = usable[0];
+  for (const p of usable) {
+    if (mode === "max" ? p.state > best.state : p.state < best.state) best = p;
+  }
+  return { value: best.state, at: best.last_changed };
+}
+function buildRecordBook(history) {
+  return {
+    hottest: historyExtreme(history.temperature || [], "max"),
+    coldest: historyExtreme(history.temperature || [], "min"),
+    peakGust: historyExtreme(history.wind_gust || [], "max"),
+    peakRainRate: historyExtreme(history.rain_rate || [], "max"),
+    wettestDay: historyExtreme(history.rain_today || [], "max")
+  };
+}
+function sameLocalDay(a, b = Date.now()) {
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+}
+function isRecordSetToday(record, now = Date.now()) {
+  return !!record && Number.isFinite(record.at) && sameLocalDay(record.at, now);
+}
+function precipTimelineBars(points, hours, buckets = 24) {
+  const end = Date.now();
+  const start = end - hours * 3600 * 1e3;
+  const span = Math.max(1, end - start);
+  const width = Math.min(48, Math.max(8, buckets));
+  const bars = Array.from({ length: width }, (_, i) => {
+    const t0 = start + i / width * span;
+    const when = new Date(t0 + span / width / 2);
+    let label = "";
+    try {
+      label = when.toLocaleTimeString(void 0, { hour: "numeric" });
+    } catch {
+      label = `${when.getHours()}`;
+    }
+    return { label, value: 0, start: t0 };
+  });
+  const sorted = [...points].filter((p) => p.unavailable || Number.isFinite(p.state)).sort((a, b) => a.last_changed - b.last_changed);
+  if (!sorted.length) return bars;
+  const rateOf = (p) => p.unavailable || !Number.isFinite(p.state) ? null : p.state;
+  let carryIdx = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].last_changed <= start) carryIdx = i;
+    else break;
+  }
+  const paint = (t0, t1, rate) => {
+    if (!(rate > 0) || !(t1 > t0)) return;
+    const i0 = Math.max(0, Math.floor((t0 - start) / span * width));
+    const i1 = Math.min(width - 1, Math.floor((Math.min(t1, end) - 1 - start) / span * width));
+    for (let i = i0; i <= i1; i++) bars[i].value = Math.max(bars[i].value, rate);
+  };
+  if (carryIdx >= 0) {
+    const rate = rateOf(sorted[carryIdx]);
+    if (rate != null) {
+      const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+      paint(start, Math.min(end, t1), rate);
+    }
+  }
+  for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const rate = rateOf(sorted[i]);
+    if (rate == null) continue;
+    const t0 = Math.max(start, sorted[i].last_changed);
+    if (t0 >= end) break;
+    const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
+    paint(t0, t1, rate);
+  }
+  return bars;
+}
+function precipTimelineSvg(bars, width = 280, height = 44) {
+  if (!bars.length) return "";
+  const max = Math.max(...bars.map((b) => b.value), 0.01);
+  const gap = 2;
+  const barW = Math.max(2, (width - gap * (bars.length - 1)) / bars.length);
+  const rects = bars.map((b, i) => {
+    const h = Math.max(b.value > 0 ? 3 : 1, b.value / max * (height - 8));
+    const x = i * (barW + gap);
+    const y = height - h;
+    const opacity = b.value > 0 ? 0.55 + b.value / max * 0.45 : 0.18;
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="currentColor" opacity="${opacity.toFixed(2)}"/>`;
+  }).join("");
+  return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
+}
+function advanceCursor(cur, seriesAsc, at) {
+  while (cur.i + 1 < seriesAsc.length && seriesAsc[cur.i + 1].last_changed <= at) {
+    cur.i += 1;
+    const p = seriesAsc[cur.i];
+    cur.value = p.unavailable || !Number.isFinite(p.state) ? null : p.state;
+  }
+}
+function comfortBandFromConfig(config) {
+  const tempMin = num(config?.comfort_temp_min);
+  const tempMax = num(config?.comfort_temp_max);
+  const humidityMin = num(config?.comfort_humidity_min);
+  const humidityMax = num(config?.comfort_humidity_max);
+  return {
+    tempMin: tempMin ?? DEFAULT_COMFORT.tempMin,
+    tempMax: tempMax ?? DEFAULT_COMFORT.tempMax,
+    humidityMin: humidityMin ?? DEFAULT_COMFORT.humidityMin,
+    humidityMax: humidityMax ?? DEFAULT_COMFORT.humidityMax
+  };
+}
+function comfortStats(tempPoints, humidityPoints, band, window2) {
+  const samples = [];
+  const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
+  const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
+  const humScatter = { i: -1, value: null };
+  for (const t of tempAsc) {
+    if (!isNumericHistoryPoint(t)) continue;
+    advanceCursor(humScatter, humidityAsc, t.last_changed);
+    if (humScatter.value == null) continue;
+    samples.push({ temp: t.state, humidity: humScatter.value });
+  }
+  const end = window2?.end ?? Date.now();
+  let start = window2?.start;
+  if (start == null || !Number.isFinite(start)) {
+    const first = Math.min(
+      tempAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+      humidityAsc.find(isNumericHistoryPoint)?.last_changed ?? end
+    );
+    start = first;
+  }
+  const breaks = /* @__PURE__ */ new Set([start, end]);
+  for (const p of tempAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  for (const p of humidityAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  const times = [...breaks].sort((a, b) => a - b);
+  const tempCur = { i: -1, value: null };
+  const humCur = { i: -1, value: null };
+  let hoursIn = 0;
+  let hoursTotal = 0;
+  for (let i = 0; i < times.length - 1; i++) {
+    const t0 = times[i];
+    const t1 = times[i + 1];
+    if (!(t1 > t0)) continue;
+    advanceCursor(tempCur, tempAsc, t0);
+    advanceCursor(humCur, humidityAsc, t0);
+    if (tempCur.value == null || humCur.value == null) continue;
+    const dtHr = (t1 - t0) / 36e5;
+    hoursTotal += dtHr;
+    const ok = tempCur.value >= band.tempMin && tempCur.value <= band.tempMax && humCur.value >= band.humidityMin && humCur.value <= band.humidityMax;
+    if (ok) hoursIn += dtHr;
+  }
+  const pct = hoursTotal > 0 ? Math.round(hoursIn / hoursTotal * 100) : null;
+  return { hoursIn, hoursTotal, pct, samples };
+}
+function comfortScatterSvg(samples, band, width = 220, height = 96) {
+  if (!samples.length) return "";
+  const temps = samples.map((s) => s.temp);
+  const hums = samples.map((s) => s.humidity);
+  const minT = Math.min(...temps, band.tempMin) - 2;
+  const maxT = Math.max(...temps, band.tempMax) + 2;
+  const minH = Math.min(...hums, band.humidityMin) - 5;
+  const maxH = Math.max(...hums, band.humidityMax) + 5;
+  const pad = 8;
+  const x = (t) => pad + (t - minT) / Math.max(0.01, maxT - minT) * (width - pad * 2);
+  const y = (h) => height - pad - (h - minH) / Math.max(0.01, maxH - minH) * (height - pad * 2);
+  const zoneX = x(band.tempMin);
+  const zoneY = y(band.humidityMax);
+  const zoneW = Math.max(4, x(band.tempMax) - zoneX);
+  const zoneH = Math.max(4, y(band.humidityMin) - zoneY);
+  const plotted = samples.length <= 80 ? samples : Array.from({ length: 80 }, (_, i) => {
+    const step = (samples.length - 1) / 79;
+    return samples[Math.round(i * step)];
+  });
+  const dots = plotted.map((s) => {
+    const inBand = s.temp >= band.tempMin && s.temp <= band.tempMax && s.humidity >= band.humidityMin && s.humidity <= band.humidityMax;
+    return `<circle cx="${x(s.temp).toFixed(1)}" cy="${y(s.humidity).toFixed(1)}" r="2.2" fill="currentColor" opacity="${inBand ? 0.9 : 0.35}"/>`;
+  }).join("");
+  return `<svg class="comfort-scatter" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" aria-hidden="true">
+    <rect x="${zoneX.toFixed(1)}" y="${zoneY.toFixed(1)}" width="${zoneW.toFixed(1)}" height="${zoneH.toFixed(1)}" fill="currentColor" opacity="0.12" rx="4"/>
+    ${dots}
+  </svg>`;
+}
+function currentSeason(date = /* @__PURE__ */ new Date(), hemisphere = "north") {
+  const m = date.getMonth();
+  let season;
+  if (m >= 2 && m <= 4) season = "spring";
+  else if (m >= 5 && m <= 7) season = "summer";
+  else if (m >= 8 && m <= 10) season = "autumn";
+  else season = "winter";
+  if (hemisphere === "south") {
+    const flip = {
+      spring: "autumn",
+      summer: "winter",
+      autumn: "spring",
+      winter: "summer"
+    };
+    return flip[season];
+  }
+  return season;
+}
+function seasonalSkinClasses(season, condition) {
+  const cond = String(condition || "").toLowerCase();
+  let condClass = "";
+  if (cond.includes("snow")) condClass = "cond-snow";
+  else if (cond.includes("lightning") || cond.includes("thunder")) condClass = "cond-storm";
+  else if (cond.includes("rain") || cond.includes("pour") || cond.includes("hail")) condClass = "cond-rain";
+  else if (cond === "sunny" || cond === "clear-night" || cond.includes("clear")) condClass = "cond-clear";
+  else if (cond.includes("cloud") || cond.includes("fog")) condClass = "cond-cloud";
+  return `skin-${season}${condClass ? ` ${condClass}` : ""}`;
 }
 const CARD_STYLES = `
   :host {
@@ -1062,6 +1303,150 @@ const CARD_STYLES = `
     line-height: 1.4;
   }
 
+  .precip-timeline {
+    margin: 0 0 10px;
+    padding: 10px 12px 8px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+    color: var(--mws-primary);
+  }
+  .precip-timeline-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 650;
+    color: var(--primary-text-color);
+    margin-bottom: 6px;
+  }
+  .precip-timeline-meta {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+    font-weight: 500;
+  }
+  .precip-timeline-svg { display: block; color: var(--mws-primary); }
+
+  .records-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: var(--mws-gap);
+  }
+  .record-tile {
+    display: grid;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+    text-align: left;
+  }
+  .record-tile.set {
+    border-color: color-mix(in srgb, var(--mws-accent) 55%, transparent);
+    background: color-mix(in srgb, var(--mws-accent) 12%, transparent);
+  }
+  .record-label {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+  .record-value {
+    font-size: 18px;
+    font-weight: 700;
+    line-height: 1.15;
+  }
+  .record-when {
+    font-size: 11.5px;
+    color: var(--secondary-text-color);
+  }
+  .record-badge {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    margin-top: 2px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 700;
+    background: color-mix(in srgb, var(--mws-accent) 22%, transparent);
+    color: var(--primary-text-color);
+  }
+
+  .comfort-panel {
+    display: grid;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    border: 1px solid var(--mws-border);
+  }
+  .comfort-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+  }
+  .comfort-title { font-size: 13px; font-weight: 650; }
+  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--primary-text-color); }
+  .comfort-track {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--mws-surface-strong);
+    overflow: hidden;
+  }
+  .comfort-fill {
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--mws-primary), var(--mws-accent));
+  }
+  .comfort-meta {
+    font-size: 12px;
+    color: var(--secondary-text-color);
+  }
+  .comfort-scatter {
+    display: block;
+    color: var(--mws-primary);
+    margin-top: 2px;
+  }
+  .comfort-axes {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    color: var(--secondary-text-color);
+  }
+
+  /* Seasonal skins — soft HA-token accents by season / condition */
+  ha-card.skin-spring {
+    --mws-primary: var(--green-color, #66bb6a);
+    --mws-accent: var(--teal-color, #26a69a);
+  }
+  ha-card.skin-summer {
+    --mws-primary: var(--amber-color, #ffca28);
+    --mws-accent: var(--orange-color, #ff9800);
+  }
+  ha-card.skin-autumn {
+    --mws-primary: var(--orange-color, #ff9800);
+    --mws-accent: var(--amber-color, #ffc107);
+  }
+  ha-card.skin-winter {
+    --mws-primary: var(--blue-color, #42a5f5);
+    --mws-accent: var(--cyan-color, #26c6da);
+  }
+  ha-card.cond-rain {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--blue-color, #2196f3) 55%, transparent);
+  }
+  ha-card.cond-storm {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--purple-color, #9c27b0) 55%, transparent);
+  }
+  ha-card.cond-snow {
+    box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--cyan-color, #00bcd4) 55%, transparent);
+  }
+  ha-card.cond-clear .hero-icon {
+    filter: drop-shadow(0 0 10px color-mix(in srgb, var(--mws-accent) 45%, transparent));
+  }
+
   @media (max-width: 520px) {
     .grid, .wind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .wind-row, .wind-row.with-rose { grid-template-columns: 1fr; }
@@ -1081,7 +1466,7 @@ const CARD_STYLES = `
     }
   }
 `;
-const CARD_VERSION = "0.7.0";
+const CARD_VERSION = "0.8.0";
 const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HTMLElement {
   constructor() {
     super(...arguments);
@@ -1097,9 +1482,18 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._prevPressure = null;
     this._pressureSample = null;
     this._history = {};
+    this._precipBars = null;
+    this._comfortTemp = [];
+    this._comfortHum = [];
+    this._historyWindow = null;
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
+    this._recordsHistory = {};
+    this._recordsBook = null;
+    this._recordsToken = 0;
+    this._recordsFetchedAt = 0;
+    this._recordsPending = false;
     this._forecastPending = false;
     this._forecastReadyKey = null;
     this._forecastAbsentKey = null;
@@ -1143,11 +1537,17 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       show_history_sparklines: true,
       show_wind_rose: true,
       show_alerts: true,
+      show_precip_timeline: true,
+      show_records: true,
+      show_comfort: true,
+      seasonal_skins: true,
       // Hourly follows weather_entity when unset (see _wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
       hourly_forecast_hours: 24,
       history_hours: 24,
+      records_period: "month",
+      hemisphere: "north",
       show_beaufort: false,
       sun_entity: "sun.sun",
       ...config,
@@ -1157,23 +1557,34 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._teardownForecast(true);
     this._forecastToken++;
     this._historyToken++;
+    this._recordsToken++;
     if (prevWeather !== nextWeather) {
       this._forecastDays = [];
       this._forecastHours = [];
       this._forecastError = null;
     }
     this._history = {};
+    this._precipBars = null;
+    this._comfortTemp = [];
+    this._comfortHum = [];
+    this._historyWindow = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
+    this._recordsHistory = {};
+    this._recordsBook = null;
+    this._recordsFetchedAt = 0;
+    this._recordsPending = false;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
+    void this._ensureRecordsHistory();
     this._render(true);
   }
   set hass(hass) {
     this._hass = hass;
     void this._ensureForecastSub();
     void this._ensureHistory();
+    void this._ensureRecordsHistory();
     this._render(false);
   }
   get hass() {
@@ -1182,7 +1593,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   disconnectedCallback() {
     this._forecastToken++;
     this._historyToken++;
+    this._recordsToken++;
     this._historyPending = false;
+    this._recordsPending = false;
     this._teardownForecast(true);
     if (this._staleTimer) {
       window.clearInterval(this._staleTimer);
@@ -1268,7 +1681,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return `${id}:${st.state}:${st.last_updated || ""}`;
     });
     parts.push(
-      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}`
+      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.show_precip_timeline}|${this._config?.show_records}|${this._config?.show_comfort}|${this._config?.seasonal_skins}|${this._config?.records_period}|${this._config?.hemisphere}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}|hist:${this._historyFetchedAt}|rec:${this._recordsFetchedAt}`
     );
     parts.push(`fc:${(this._forecastDays || []).length}:${(this._forecastHours || []).length}:${this._forecastError || ""}`);
     parts.push(`hist:${Object.keys(this._history).map((k) => `${k}:${this._history[k]?.length || 0}`).join(",")}`);
@@ -1560,11 +1973,83 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   _historyHours() {
     return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
   }
+  _wantPrecipTimeline() {
+    return this._config?.show_precip_timeline !== false && !this._config?.hide_rain;
+  }
+  _wantComfort() {
+    return this._config?.show_comfort !== false && !this._config?.hide_comfort;
+  }
+  _wantRecords() {
+    return this._config?.show_records !== false && !this._config?.hide_records;
+  }
+  _recordsDays() {
+    return this._config?.records_period === "year" ? 365 : 30;
+  }
+  _parseHistoryPoint(rawState, changed) {
+    const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
+    if (!Number.isFinite(t)) return null;
+    if (typeof rawState === "string") {
+      const low = rawState.toLowerCase();
+      if (low === "unavailable" || low === "unknown") {
+        return { state: Number.NaN, last_changed: t, unavailable: true };
+      }
+    }
+    let state = num(rawState);
+    if (state == null && typeof rawState === "string") {
+      const parsed = parseWindDirection({
+        state: rawState
+      });
+      state = parsed.deg;
+    }
+    return state == null ? null : { state, last_changed: t };
+  }
+  _ingestHistoryRaw(raw, keyById) {
+    const next = {};
+    const asRecord = raw;
+    if (Array.isArray(asRecord)) {
+      for (const series of asRecord) {
+        if (!Array.isArray(series) || !series.length) continue;
+        const id = series[0]?.entity_id || "";
+        const key = keyById[id];
+        if (!key) continue;
+        next[key] = series.map((p) => this._parseHistoryPoint(p.state, p.last_changed)).filter((p) => !!p);
+      }
+    } else if (asRecord && typeof asRecord === "object") {
+      for (const [id, series] of Object.entries(asRecord)) {
+        const key = keyById[id];
+        if (!key || !Array.isArray(series)) continue;
+        next[key] = series.map((p) => this._parseHistoryPoint(p.s ?? p.state, p.lu ?? p.last_changed)).filter((p) => !!p);
+      }
+    }
+    return next;
+  }
+  async _fetchHistoryRaw(entityIds, start, end, significantOnly) {
+    if (!this._hass) return null;
+    if (this._hass.connection?.sendMessagePromise) {
+      return this._hass.connection.sendMessagePromise({
+        type: "history/history_during_period",
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        significant_changes_only: significantOnly,
+        minimal_response: true,
+        no_attributes: true,
+        entity_ids: entityIds
+      });
+    }
+    if (this._hass.callApi) {
+      const sig = significantOnly ? 1 : 0;
+      const q = `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=${sig}&minimal_response`;
+      return this._hass.callApi("GET", q);
+    }
+    return null;
+  }
   async _ensureHistory() {
     if (!this._hass || !this._config) return;
     const needSparks = this._config.show_history_sparklines !== false;
     const needRose = this._config.show_wind_rose !== false;
-    if (!needSparks && !needRose) return;
+    const needPrecip = this._wantPrecipTimeline();
+    const needComfort = this._wantComfort();
+    if (!needSparks && !needRose && !needPrecip && !needComfort) return;
     if (this._historyPending) return;
     if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1e3) return;
     const hours = this._historyHours();
@@ -1572,75 +2057,40 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const start = new Date(end.getTime() - hours * 3600 * 1e3);
     const entityIds = [];
     const keyById = {};
+    const addKey = (key) => {
+      const id = this._config?.entities?.[key];
+      if (!id) return;
+      entityIds.push(id);
+      keyById[id] = key;
+    };
     if (needSparks) {
-      for (const key of HISTORY_SPARK_KEYS) {
-        const id = this._config.entities?.[key];
-        if (id) {
-          entityIds.push(id);
-          keyById[id] = key;
-        }
-      }
+      for (const key of HISTORY_SPARK_KEYS) addKey(key);
     }
-    if (needRose) {
-      const dirId = this._config.entities?.wind_direction;
-      if (dirId) {
-        entityIds.push(dirId);
-        keyById[dirId] = "wind_direction";
-      }
+    if (needRose) addKey("wind_direction");
+    if (needPrecip) addKey("rain_rate");
+    if (needComfort) {
+      addKey("temperature");
+      addKey("humidity");
     }
     const unique = [...new Set(entityIds)];
     if (!unique.length) return;
     this._historyPending = true;
     const token = ++this._historyToken;
     try {
-      let raw;
-      if (this._hass.connection?.sendMessagePromise) {
-        raw = await this._hass.connection.sendMessagePromise({
-          type: "history/history_during_period",
-          start_time: start.toISOString(),
-          end_time: end.toISOString(),
-          significant_changes_only: false,
-          minimal_response: true,
-          no_attributes: true,
-          entity_ids: unique
-        });
-      } else if (this._hass.callApi) {
-        raw = await this._hass.callApi(
-          "GET",
-          `history/period/${start.toISOString()}?filter_entity_id=${unique.join(",")}&significant_changes_only=0&minimal_response`
-        );
-      } else {
-        return;
-      }
-      if (token !== this._historyToken) return;
-      const next = {};
-      const asRecord = raw;
-      const parsePoint = (rawState, changed) => {
-        let state = num(rawState);
-        if (state == null && typeof rawState === "string") {
-          const parsed = parseWindDirection({
-            entity_id: "",
-            state: rawState,
-            attributes: {}
-          });
-          state = parsed.deg;
-        }
-        const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
-        return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
-      };
-      if (Array.isArray(asRecord)) {
-        for (const series of asRecord) {
-          if (!Array.isArray(series) || !series.length) continue;
-          const id = series[0]?.entity_id || "";
-          const key = keyById[id];
-          if (!key) continue;
-          next[key] = series.map((p) => parsePoint(p.state, p.last_changed)).filter((p) => !!p);
-        }
-      } else if (asRecord && typeof asRecord === "object") {
-        for (const [id, series] of Object.entries(asRecord)) {
-          const key = keyById[id];
-          if (!key || !Array.isArray(series)) continue;
-          next[key] = series.map((p) => parsePoint(p.s ?? p.state, p.lu ?? p.last_changed)).filter((p) => !!p);
+      const raw = await this._fetchHistoryRaw(unique, start, end, false);
+      if (raw == null || token !== this._historyToken) return;
+      const next = this._ingestHistoryRaw(raw, keyById);
+      this._precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
+      this._comfortTemp = needComfort ? next.temperature || [] : [];
+      this._comfortHum = needComfort ? next.humidity || [] : [];
+      this._historyWindow = { start: start.getTime(), end: end.getTime() };
+      for (const [key, pts] of Object.entries(next)) {
+        if (key === "rain_rate") {
+          next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
+        } else if (key === "wind_gust") {
+          next[key] = downsampleHistoryExtrema(pts, 96, "max");
+        } else {
+          next[key] = downsampleHistory(pts, 72);
         }
       }
       this._history = next;
@@ -1651,6 +2101,51 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (token === this._historyToken) this._historyFetchedAt = Date.now();
     } finally {
       if (token === this._historyToken) this._historyPending = false;
+    }
+  }
+  async _ensureRecordsHistory() {
+    if (!this._hass || !this._config || !this._wantRecords()) return;
+    if (this._recordsPending) return;
+    if (this._recordsFetchedAt && Date.now() - this._recordsFetchedAt < 15 * 60 * 1e3) return;
+    const end = /* @__PURE__ */ new Date();
+    const start = new Date(end.getTime() - this._recordsDays() * 864e5);
+    const entityIds = [];
+    const keyById = {};
+    for (const key of ["temperature", "wind_gust", "rain_rate", "rain_today"]) {
+      const id = this._config.entities?.[key];
+      if (!id) continue;
+      entityIds.push(id);
+      keyById[id] = key;
+    }
+    const unique = [...new Set(entityIds)];
+    if (!unique.length) return;
+    this._recordsPending = true;
+    const token = ++this._recordsToken;
+    try {
+      const raw = await this._fetchHistoryRaw(unique, start, end, true);
+      if (raw == null || token !== this._recordsToken) return;
+      const full = this._ingestHistoryRaw(raw, keyById);
+      this._recordsBook = buildRecordBook(full);
+      const slim = {};
+      for (const [key, pts] of Object.entries(full)) {
+        if (key === "temperature") {
+          const highs = downsampleHistoryExtrema(pts, 120, "max");
+          const lows = downsampleHistoryExtrema(pts, 120, "min");
+          const byTs = /* @__PURE__ */ new Map();
+          for (const p of [...highs, ...lows]) byTs.set(p.last_changed, p);
+          slim[key] = [...byTs.values()].sort((a, b) => a.last_changed - b.last_changed);
+        } else {
+          slim[key] = downsampleHistoryExtrema(pts, 240, "max");
+        }
+      }
+      this._recordsHistory = slim;
+      this._recordsFetchedAt = Date.now();
+      this._renderSignature = null;
+      this._render(true);
+    } catch {
+      if (token === this._recordsToken) this._recordsFetchedAt = Date.now();
+    } finally {
+      if (token === this._recordsToken) this._recordsPending = false;
     }
   }
   _sectionTitle(label, compact) {
@@ -1786,6 +2281,122 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     return `${hourly}${daily}`;
   }
+  _precipTimelineHtml() {
+    if (!this._wantPrecipTimeline()) return "";
+    const hours = this._historyHours();
+    const bars = this._precipBars || precipTimelineBars(this._history.rain_rate || [], hours, Math.min(36, Math.max(12, hours)));
+    if (!bars.length || !this._precipBars && !(this._history.rain_rate || []).length) return "";
+    const peak = Math.max(...bars.map((b) => b.value), 0);
+    const peakFmt = peak > 0 ? fmtNum(peak, 2) : "0";
+    return `<div class="precip-timeline" data-key="rain_rate" data-entity="${esc(this._config?.entities?.rain_rate || "")}">
+      <div class="precip-timeline-top">
+        <span>Precipitation timeline</span>
+        <span class="precip-timeline-meta">${hours}h · peak ${esc(peakFmt)}</span>
+      </div>
+      ${precipTimelineSvg(bars)}
+    </div>`;
+  }
+  _recordsHtml(ctx) {
+    const book = this._recordsBook || buildRecordBook(this._recordsHistory);
+    const period = this._config?.records_period === "year" ? "Year" : "Month";
+    const target = this._config?.unit_system || "native";
+    const tempSrc = this._conv(ctx.temp, "°F").src || "°F";
+    const gustSrc = this._conv(ctx.gust || ctx.maxGust, "mph").src || "mph";
+    const rateSrc = this._conv(ctx.rate, "in/h").src || "in/h";
+    const rainSrc = this._conv(ctx.today, "in").src || "in";
+    const fmtTemp = (ex) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, tempSrc, target);
+      return {
+        value: `${c.value == null ? "—" : Math.round(c.value)}°`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
+      };
+    };
+    const fmtGust = (ex) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, gustSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 1)} ${esc(c.unit || "mph")}`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
+      };
+    };
+    const fmtRate = (ex) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, rateSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "")}`.trim(),
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
+      };
+    };
+    const fmtRain = (ex) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, rainSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "in")}`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
+      };
+    };
+    const hot = fmtTemp(book.hottest);
+    const cold = fmtTemp(book.coldest);
+    const gust = fmtGust(book.peakGust);
+    const rate = fmtRate(book.peakRainRate);
+    const wet = fmtRain(book.wettestDay);
+    const setHot = isRecordSetToday(book.hottest);
+    const setCold = isRecordSetToday(book.coldest);
+    const setGust = isRecordSetToday(book.peakGust);
+    const setRate = isRecordSetToday(book.peakRainRate);
+    const setWet = isRecordSetToday(book.wettestDay);
+    const tile = (label, value, when, set) => `
+      <div class="record-tile ${set ? "set" : ""}">
+        <div class="record-label">${esc(label)}</div>
+        <div class="record-value">${value}</div>
+        ${when ? `<div class="record-when">${esc(when)}</div>` : ""}
+        ${set ? `<span class="record-badge">Set today</span>` : ""}
+      </div>`;
+    if (!book.hottest && !book.coldest && !book.peakGust && !book.peakRainRate && !book.wettestDay) {
+      return `<div class="hint">Record book needs history for temperature, gust, or rain sensors (${period.toLowerCase()} window).</div>`;
+    }
+    return `<div class="records-grid" title="${esc(period)} extremes">
+      ${tile(`Hottest · ${period}`, hot.value, hot.when, setHot)}
+      ${tile(`Coldest · ${period}`, cold.value, cold.when, setCold)}
+      ${tile(`Peak gust · ${period}`, gust.value, gust.when, setGust)}
+      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, setRate)}
+      ${tile(`Wettest day · ${period}`, wet.value, wet.when, setWet)}
+    </div>`;
+  }
+  _comfortHtml() {
+    const band = comfortBandFromConfig(this._config);
+    const src = this._conv(this._st("temperature"), "°F").src || "°F";
+    const tempPts = (this._comfortTemp.length ? this._comfortTemp : this._history.temperature || []).map((p) => {
+      if (p.unavailable) return { state: Number.NaN, last_changed: p.last_changed, unavailable: true };
+      const cmp = thresholdCompareValue(p.state, src);
+      return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
+    }).filter((p) => !!p);
+    const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
+    const win = this._historyWindow || {
+      start: Date.now() - this._historyHours() * 36e5,
+      end: Date.now()
+    };
+    const stats = comfortStats(tempPts, humPts, band, win);
+    if (!stats.samples.length && !(stats.hoursTotal > 0)) {
+      return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
+    }
+    const target = this._config?.unit_system || "native";
+    const lo = convertValue(band.tempMin, "°F", target);
+    const hi = convertValue(band.tempMax, "°F", target);
+    const bandLabel = `${lo.value == null ? "—" : Math.round(lo.value)}–${hi.value == null ? "—" : Math.round(hi.value)}${lo.unit || "°"} · ${band.humidityMin}–${band.humidityMax}% RH`;
+    const pct = stats.pct == null ? "—" : `${stats.pct}%`;
+    return `<div class="comfort-panel">
+      <div class="comfort-top">
+        <div class="comfort-title">Hours in comfort</div>
+        <div class="comfort-pct">${esc(pct)}</div>
+      </div>
+      <div class="comfort-track"><div class="comfort-fill" style="width:${stats.pct == null ? 0 : Math.min(100, stats.pct)}%"></div></div>
+      <div class="comfort-meta">${fmtNum(stats.hoursIn, 1)}h of ${fmtNum(stats.hoursTotal, 1)}h in band · ${esc(bandLabel)}</div>
+      ${comfortScatterSvg(stats.samples, band)}
+      <div class="comfort-axes"><span>Cooler</span><span>Temp →</span><span>Warmer</span></div>
+    </div>`;
+  }
   _soilTiles() {
     const parts = [];
     for (let i = 1; i <= 8; i++) {
@@ -1876,6 +2487,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
             </div>` : daysSince != null ? `<div class="rain-goal"><div class="rain-goal-top"><span>Days since rain</span><span>${daysSince < 1 ? "<1" : fmtNum(daysSince, 0)}</span></div></div>` : "";
         const body = `
           ${goal}
+          ${this._precipTimelineHtml()}
           ${this._sparkline([
           { label: "T", value: num(ctx.today?.state) },
           { label: "E", value: num(ctx.event?.state) },
@@ -1939,6 +2551,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
           ${this._tile("co2", this._label("co2", "CO₂"), ctx.co2, num(ctx.co2?.state) == null ? "—" : `${fmtNum(num(ctx.co2?.state), 0)} ${esc(this._unitStr("co2", ctx.co2, "ppm"))}`, "mdi:molecule-co2", this._color("co2", num(ctx.co2?.state), "green"))}
         </div>`;
         return this._wrapSection(id, compact, body);
+      }
+      case "records": {
+        if (!this._wantRecords()) return "";
+        return this._wrapSection(id, compact, this._recordsHtml(ctx));
+      }
+      case "comfort": {
+        if (!this._wantComfort()) return "";
+        return this._wrapSection(id, compact, this._comfortHtml());
       }
       case "forecast": {
         const showDaily = !!this._config?.show_forecast;
@@ -2156,9 +2776,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     };
     const order = normalizeSectionOrder(this._config.section_order);
     const sectionsHtml = showExtra ? order.map((sid) => this._renderSection(sid, ctx)).join("") : "";
+    const weatherSt = entityState(this._hass, this._config.weather_entity);
+    const skinOn = this._config.seasonal_skins !== false;
+    const season = currentSeason(/* @__PURE__ */ new Date(), this._config.hemisphere === "south" ? "south" : "north");
+    const skinClass = skinOn ? seasonalSkinClasses(season, weatherSt?.state || (raining ? "rainy" : null)) : "";
+    const layoutClass = compact ? "compact" : layout === "chips" ? "chips-layout" : layout;
     const html = `
       <style>${CARD_STYLES}</style>
-      <ha-card class="${compact ? "compact" : layout === "chips" ? "chips-layout" : layout}${isStale ? " stale" : ""}">
+      <ha-card class="${layoutClass}${isStale ? " stale" : ""}${skinClass ? ` ${skinClass}` : ""}">
         ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, pressure, uv, gust, raining) : ""}
         ${showBody ? `
           ${this._alertsHtml()}

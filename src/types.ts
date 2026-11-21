@@ -1,5 +1,8 @@
 export type Layout = "full" | "compact" | "chips";
 export type UnitSystem = "native" | "imperial" | "metric";
+export type Hemisphere = "north" | "south";
+export type RecordsPeriod = "month" | "year";
+export type Season = "spring" | "summer" | "autumn" | "winter";
 
 export type SectionId =
   | "conditions"
@@ -10,6 +13,8 @@ export type SectionId =
   | "lightning"
   | "air"
   | "station"
+  | "records"
+  | "comfort"
   | "forecast"
   | "battery";
 
@@ -65,6 +70,10 @@ export interface CardConfig {
   show_history_sparklines?: boolean;
   show_wind_rose?: boolean;
   show_alerts?: boolean;
+  show_precip_timeline?: boolean;
+  show_records?: boolean;
+  show_comfort?: boolean;
+  seasonal_skins?: boolean;
   tablet_mode?: boolean;
   weather_entity?: string;
   alert_entity?: string;
@@ -73,6 +82,14 @@ export interface CardConfig {
   forecast_days?: number;
   hourly_forecast_hours?: number;
   history_hours?: number;
+  records_period?: RecordsPeriod;
+  hemisphere?: Hemisphere;
+  /** Comfort band temperature floor (°F stored). */
+  comfort_temp_min?: number | string;
+  /** Comfort band temperature ceiling (°F stored). */
+  comfort_temp_max?: number | string;
+  comfort_humidity_min?: number | string;
+  comfort_humidity_max?: number | string;
   stale_minutes?: number;
   battery_warning_threshold?: number | string;
   rain_month_normal?: number | string;
@@ -86,7 +103,35 @@ export interface CardConfig {
   hide_lightning?: boolean;
   hide_air?: boolean;
   hide_more?: boolean;
+  hide_records?: boolean;
+  hide_comfort?: boolean;
   hide_battery?: boolean;
+}
+
+export interface HistoryExtreme {
+  value: number;
+  at: number;
+}
+
+export interface RecordBook {
+  hottest: HistoryExtreme | null;
+  coldest: HistoryExtreme | null;
+  peakGust: HistoryExtreme | null;
+  peakRainRate: HistoryExtreme | null;
+  wettestDay: HistoryExtreme | null;
+}
+
+export interface ComfortStats {
+  hoursIn: number;
+  hoursTotal: number;
+  pct: number | null;
+  samples: Array<{ temp: number; humidity: number }>;
+}
+
+export interface PrecipBar {
+  label: string;
+  value: number;
+  start: number;
 }
 
 export interface HassEntity {
@@ -149,6 +194,8 @@ export interface ConvertedValue {
 export interface HistoryPoint {
   state: number;
   last_changed: number;
+  /** True when HA reported unavailable/unknown at this transition. */
+  unavailable?: boolean;
 }
 
 export interface WindRoseBin {

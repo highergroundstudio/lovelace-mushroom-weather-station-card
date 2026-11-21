@@ -1,6 +1,6 @@
 # Mushroom Weather Station Card
 
-A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Prefix auto-fill, Home Assistant entity pickers, heat/UV coloring, wind compass, hourly + daily forecast, history sparklines, and weather alerts.
+A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Prefix auto-fill, Home Assistant entity pickers, heat/UV coloring, wind compass, hourly + daily forecast, history insights (records, precip timeline, comfort), and weather alerts.
 
 ![Mushroom Weather Station Card](images/card-preview.svg)
 
@@ -15,14 +15,14 @@ A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine
 
 One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
 
-Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.7.0**.
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.8.0**.
 
 ### Not seeing the new version?
 
 1. HACS → Frontend → **Mushroom Weather Station Card** → check for updates / redownload
 2. Hard-refresh the browser (Ctrl+F5 / Cmd+Shift+R)
-3. Open the card editor and confirm the banner shows **v0.7.0** (not an older build)
-4. If the banner is stale, clear Lovelace resource cache or bump the resource URL with `?v=0.7.0`
+3. Open the card editor and confirm the banner shows **v0.8.0** (not an older build)
+4. If the banner is stale, clear Lovelace resource cache or bump the resource URL with `?v=0.8.0`
 
 HACS only sees published **GitHub releases** (not commits on `main`).
 
@@ -57,6 +57,10 @@ show_hourly_forecast: true
 show_history_sparklines: true
 show_wind_rose: true
 show_alerts: true
+show_precip_timeline: true
+show_records: true
+show_comfort: true
+seasonal_skins: true
 ```
 
 Layouts: `full`, `compact`, `chips` (glance bar with tap-to-expand).
@@ -73,6 +77,16 @@ show_history_sparklines: true
 history_hours: 24
 show_wind_rose: true
 show_alerts: true
+show_precip_timeline: true
+show_records: true
+records_period: month   # or year
+show_comfort: true
+comfort_temp_min: 65    # °F stored; editor shows °C when metric
+comfort_temp_max: 78
+comfort_humidity_min: 30
+comfort_humidity_max: 60
+seasonal_skins: true
+hemisphere: north       # or south
 weather_entity: weather.home
 alert_entity: binary_sensor.nws_alert   # optional
 sun_entity: sun.sun
@@ -92,12 +106,16 @@ section_order:
   - lightning
   - air
   - station
+  - records
+  - comfort
   - forecast
   - battery
 hide_sun: false
 hide_soil: false
 hide_lightning: false
 hide_air: false
+hide_records: false
+hide_comfort: false
 thresholds:
   # Cutoffs are stored/compared in imperial (°F / mph), even when unit_system is metric.
   # The visual editor converts °C/km/h inputs for you; YAML values must use °F / mph.

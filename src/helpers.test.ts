@@ -4,14 +4,20 @@ import {
   applyPrefix,
   batteryInfo,
   beaufort,
+  buildRecordBook,
   cardinalToDeg,
   collectAlerts,
+  comfortStats,
   convertValue,
+  currentSeason,
   daysSinceTimestamp,
   degToCardinal,
   displayThresholdValue,
+  downsampleHistory,
+  downsampleHistoryExtrema,
   esc,
   historyLineSpark,
+  isRecordSetToday,
   mergeThresholds,
   moonMeta,
   moveSection,
@@ -19,8 +25,11 @@ import {
   normalizeSectionOrder,
   parseWindDirection,
   pm25Meta,
+  precipTimelineBars,
   pressureTrendMeta,
   rainMonthProgress,
+  seasonalSkinClasses,
+  comfortScatterSvg,
   storeThresholdValue,
   thresholdCompareValue,
   uvMeta,
@@ -160,6 +169,166 @@ describe("0.7 helpers", () => {
     const stored = storeThresholdValue(12.5, "temp", "metric");
     expect(stored).toBeCloseTo(54.5, 5);
     expect(displayThresholdValue(stored, "temp", "metric")).toBeCloseTo(12.5, 5);
+  });
+});
+
+describe("0.8 helpers", () => {
+  it("builds record book, precip timeline, comfort, and seasonal skins", () => {
+    const now = Date.now();
+    const book = buildRecordBook({
+      temperature: [
+        { state: 40, last_changed: now - 1000 },
+        { state: 95, last_changed: now },
+      ],
+      wind_gust: [{ state: 22, last_changed: now }],
+      rain_rate: [{ state: 0.4, last_changed: now }],
+      rain_today: [{ state: 1.1, last_changed: now }],
+    });
+    expect(book.hottest?.value).toBe(95);
+    expect(book.coldest?.value).toBe(40);
+    expect(book.peakGust?.value).toBe(22);
+    expect(isRecordSetToday(book.hottest, now)).toBe(true);
+    expect(isRecordSetToday({ value: 99, at: now - 2 * 86400000 }, now)).toBe(false);
+
+    // Uniform downsample can miss a mid-series spike; extrema mode keeps it.
+    const spikeSeries = Array.from({ length: 100 }, (_, i) => ({
+      state: i === 48 ? 9.5 : 0.1,
+      last_changed: now - (100 - i) * 60_000,
+    }));
+    expect(Math.max(...downsampleHistory(spikeSeries, 20).map((p) => p.state))).toBe(0.1);
+    expect(Math.max(...downsampleHistoryExtrema(spikeSeries, 20, "max").map((p) => p.state))).toBe(9.5);
+
+    const bars = precipTimelineBars(
+      [
+        { state: 0.1, last_changed: now - 3600_000 },
+        { state: 0.5, last_changed: now - 600_000 },
+      ],
+      6,
+      12,
+    );
+    expect(bars.length).toBe(12);
+    expect(Math.max(...bars.map((b) => b.value))).toBeGreaterThan(0);
+
+    // Sustained rate with only a start+stop transition fills intervening buckets.
+    const sustained = precipTimelineBars(
+      [
+        { state: 0.4, last_changed: now - 3 * 3600_000 },
+        { state: 0, last_changed: now - 3600_000 },
+      ],
+      6,
+      12,
+    );
+    const wetBuckets = sustained.filter((b) => b.value > 0).length;
+    expect(wetBuckets).toBeGreaterThan(2);
+
+    // Cap-after-compute: early spike survives on the full series, vanishes if capped first.
+    const dense = Array.from({ length: 1500 }, (_, i) => ({
+      state: i === 0 ? 0.8 : 0,
+      last_changed: now - (1500 - i) * 1000,
+    }));
+    expect(Math.max(...precipTimelineBars(dense, 1, 24).map((b) => b.value))).toBe(0.8);
+    expect(Math.max(...precipTimelineBars(dense.slice(-1200), 1, 24).map((b) => b.value))).toBe(0);
+
+    const comfort = comfortStats(
+      [
+        { state: 70, last_changed: now - 3600_000 },
+        { state: 72, last_changed: now - 1800_000 },
+        { state: 90, last_changed: now },
+      ],
+      [
+        // Unchanged humidity for 90m — still valid at the mid temp sample.
+        { state: 45, last_changed: now - 3600_000 },
+        { state: 80, last_changed: now },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: now - 3600_000, end: now },
+    );
+    expect(comfort.samples.length).toBe(3);
+    expect(comfort.samples[1]?.humidity).toBe(45);
+    expect(comfort.hoursIn).toBeGreaterThan(0);
+
+    // Humidity change mid-temp-interval splits dwell (5 min in-band of 30).
+    const splitStart = now - 3600_000;
+    const split = comfortStats(
+      [
+        { state: 70, last_changed: splitStart },
+        { state: 71, last_changed: splitStart + 30 * 60_000 },
+      ],
+      [
+        { state: 45, last_changed: splitStart },
+        { state: 80, last_changed: splitStart + 5 * 60_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: splitStart, end: splitStart + 30 * 60_000 },
+    );
+    expect(split.hoursIn).toBeCloseTo(5 / 60, 3);
+    expect(split.hoursTotal).toBeCloseTo(0.5, 3);
+
+    // Scatter thins uniformly across the series (keeps the first sample), not just the tail.
+    const denseSamples = Array.from({ length: 200 }, (_, i) => ({
+      temp: i === 0 ? 50 : 70,
+      humidity: 40,
+    }));
+    const svg = comfortScatterSvg(denseSamples, {
+      tempMin: 65,
+      tempMax: 78,
+      humidityMin: 30,
+      humidityMax: 60,
+    });
+    expect((svg.match(/<circle/g) || []).length).toBe(80);
+    // temp 50 → cx ≈ 20.8 on the default scale; tail-only thinning would omit it.
+    expect(svg).toContain('cx="20.8"');
+
+    // Duration without a scatter sample: humidity recovers after the only temp instant.
+    const durationOnly = comfortStats(
+      [{ state: 70, last_changed: now - 3600_000 }],
+      [
+        { state: Number.NaN, last_changed: now - 3600_000, unavailable: true },
+        { state: 45, last_changed: now - 3600_000 + 10 * 60_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: now - 3600_000, end: now - 3600_000 + 60 * 60_000 },
+    );
+    expect(durationOnly.samples.length).toBe(0);
+    expect(durationOnly.hoursIn).toBeCloseTo(50 / 60, 3);
+    expect(durationOnly.hoursTotal).toBeCloseTo(50 / 60, 3);
+
+    // Unavailable humidity clears validity until a later recovery sample.
+    const gap = comfortStats(
+      [
+        { state: 70, last_changed: now - 3600_000 },
+        { state: 71, last_changed: now - 1800_000 },
+        { state: 72, last_changed: now - 600_000 },
+      ],
+      [
+        { state: 45, last_changed: now - 3600_000 },
+        { state: Number.NaN, last_changed: now - 2700_000, unavailable: true },
+        { state: 50, last_changed: now - 900_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+    );
+    expect(gap.samples.map((s) => s.temp)).toEqual([70, 72]);
+    expect(gap.samples.find((s) => s.temp === 71)).toBeUndefined();
+
+    // Unavailable rain-rate must not extend the previous wet rate across the gap.
+    const outage = precipTimelineBars(
+      [
+        { state: 0.6, last_changed: now - 4 * 3600_000 },
+        { state: Number.NaN, last_changed: now - 3 * 3600_000, unavailable: true },
+        { state: 0.2, last_changed: now - 1 * 3600_000 },
+      ],
+      6,
+      12,
+    );
+    expect(outage.some((b) => b.value >= 0.6)).toBe(true);
+    expect(outage.some((b) => b.value > 0 && b.value < 0.6)).toBe(true);
+    // Bucket ~now-2h sits in the unavailable gap (index 8 of 12 over 6h).
+    expect(outage[8]?.value ?? -1).toBe(0);
+
+    expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "north")).toBe("summer");
+    expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "south")).toBe("winter");
+    expect(seasonalSkinClasses("winter", "rainy")).toContain("skin-winter");
+    expect(seasonalSkinClasses("winter", "rainy")).toContain("cond-rain");
   });
 });
 
