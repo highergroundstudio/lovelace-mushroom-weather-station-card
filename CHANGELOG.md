@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.0 — 2026-11-21
+
+Feature update for personal weather stations (Ecowitt-style add-ons and freshness).
+
+- **Stale data warning** — subtitle shows relative last-updated time; warning style when older than `stale_minutes` (default 30)
+- **Soil moisture** — channels 1–4 with moisture thresholds (`hide_soil`)
+- **Lightning** — strike count, distance, last strike (`hide_lightning`)
+- **Air quality** — PM2.5 tile with Good / Moderate / Sensitive / Unhealthy labels (`hide_air`)
+- **Pressure trend** — Rising / Steady / Falling from successive readings
+- **Wind direction text** — accepts cardinal strings (e.g. `NNW`) as well as degrees
+- **Beaufort scale** — optional `show_beaufort` on the wind speed tile
+- **Forecast** — precipitation probability per day; configurable `forecast_days` (1–7)
+- **Battery %** — percentage sensors show the value in the status line
+- **Render skip** — re-renders only when watched entities or forecast change
+- Editor: new entity slots, section toggles, stale / forecast / Beaufort options
+
+## 0.4.7 — 2026-08-31
+
+- Enhance date formatting for last-rain relative times
+
 ## 0.4.2 — 2026-08-31
 
 - Editor toggles use Home Assistant `ha-switch` rows instead of raw checkboxes

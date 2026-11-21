@@ -15,7 +15,7 @@ A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine
 
 One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
 
-Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.4.2**.
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.5.0**.
 
 ## Install with HACS
 
@@ -54,8 +54,15 @@ unit_system: imperial   # or metric | native
 tablet_mode: true
 show_forecast: true
 weather_entity: weather.home
+forecast_days: 5
+show_updated: true
+stale_minutes: 30
+show_beaufort: false
 battery_warning_threshold: 20
 hide_sun: false
+hide_soil: false
+hide_lightning: false
+hide_air: false
 thresholds:
   uv:
     - above: 8
@@ -65,9 +72,20 @@ thresholds:
       color: blue
 labels:
   temperature: Outside
+  soil_moisture_1: Raised bed
 units:
   rain_today: in
 ```
+
+### New in 0.5.0
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `show_updated` | `true` | Relative last-updated time in the subtitle |
+| `stale_minutes` | `30` | Warn when primary sensors are older than this |
+| `forecast_days` | `5` | Daily forecast cards (1–7), with precip % when available |
+| `show_beaufort` | `false` | Beaufort number on the wind speed tile |
+| Soil / lightning / PM2.5 | auto | Prefix slots + hide toggles in the editor |
 
 Visual editor tabs: **Layout** · **Entities** · **Display**.
 

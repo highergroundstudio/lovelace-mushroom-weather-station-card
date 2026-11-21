@@ -10,7 +10,9 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 - Home Assistant entity pickers for every override
 - Layouts: `full`, `compact`, `chips`
 - Threshold colors, wind compass, rain sparkline
-- Optional forecast from a `weather.*` entity
+- Soil moisture, lightning, and PM2.5 sections
+- Stale-data warning and pressure trend
+- Optional forecast from a `weather.*` entity (with precip %)
 - Mushroom is not required
 
 ## Example
@@ -20,4 +22,6 @@ type: custom:mushroom-weather-station-card
 name: Backyard Station
 prefix: ws
 layout: full
+show_updated: true
+stale_minutes: 30
 ```

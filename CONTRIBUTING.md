@@ -15,6 +15,8 @@ Use the **bug** or **feature** templates. Include:
 - Card: `dist/mushroom-weather-station-card.js` (owns `CARD_VERSION`)
 - Editor: `dist/mushroom-weather-station-card-editor.js` (reads version from the card)
 - Both files must ship together on the GitHub release
+- Helper checks: `npm test` (or `node scripts/test-helpers.mjs`)
+- Offline visual demo: `npm run demo` then open `http://127.0.0.1:8765/demo/`
 
 ## Release from github.com
 

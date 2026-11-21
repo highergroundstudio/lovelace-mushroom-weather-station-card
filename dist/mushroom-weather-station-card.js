@@ -1,11 +1,11 @@
 /**
  * Mushroom Weather Station Card
  * Home Assistant Lovelace custom card — HACS plugin
- * Version 0.4.7
+ * Version 0.5.0
  *
  * type: custom:mushroom-weather-station-card
  */
-const CARD_VERSION = "0.4.7";
+const CARD_VERSION = "0.5.0";
 const CARD_TYPE = "mushroom-weather-station-card";
 const CARD_NAME = "Mushroom Weather Station Card";
 
@@ -35,6 +35,14 @@ const PREFIX_MAP = {
   indoor_temperature: "sensor.{p}_indoor_temperature",
   indoor_humidity: "sensor.{p}_indoor_humidity",
   co2: "sensor.{p}_co2",
+  pm25: "sensor.{p}_pm25",
+  soil_moisture_1: "sensor.{p}_soil_moisture_1",
+  soil_moisture_2: "sensor.{p}_soil_moisture_2",
+  soil_moisture_3: "sensor.{p}_soil_moisture_3",
+  soil_moisture_4: "sensor.{p}_soil_moisture_4",
+  lightning_count: "sensor.{p}_lightning_num",
+  lightning_distance: "sensor.{p}_lightning",
+  lightning_time: "sensor.{p}_lightning_time",
   battery: "binary_sensor.{p}_battery",
 };
 
@@ -72,6 +80,11 @@ const DEFAULT_THRESHOLDS = {
   wind_speed: [{ above: 20, color: "orange" }],
   wind_gust: [{ above: 25, color: "orange" }],
   co2: [{ above: 1200, color: "red" }, { above: 800, color: "orange" }, { below: 800, color: "green" }],
+  pm25: [{ above: 55, color: "red" }, { above: 35, color: "orange" }, { above: 12, color: "amber" }, { below: 12, color: "green" }],
+  soil_moisture_1: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_2: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_3: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
+  soil_moisture_4: [{ below: 20, color: "red" }, { below: 35, color: "orange" }, { above: 35, color: "green" }],
 };
 
 const COLOR_VARS = {
@@ -108,6 +121,23 @@ function degToCardinal(deg) {
   const n = Number(deg);
   if (!Number.isFinite(n)) return null;
   return CARDINALS[Math.round((((n % 360) + 360) % 360) / 22.5) % 16];
+}
+
+function cardinalToDeg(cardinal) {
+  if (!cardinal) return null;
+  const key = String(cardinal).trim().toUpperCase();
+  const idx = CARDINALS.indexOf(key);
+  return idx >= 0 ? idx * 22.5 : null;
+}
+
+function parseWindDirection(st) {
+  if (!st || !available(st)) return { deg: null, card: null };
+  const raw = st.state;
+  const asNum = num(raw);
+  if (asNum != null) return { deg: asNum, card: degToCardinal(asNum) };
+  const card = String(raw || "").trim().toUpperCase();
+  if (CARDINALS.includes(card)) return { deg: cardinalToDeg(card), card };
+  return { deg: null, card: null };
 }
 
 function num(state) {
@@ -147,6 +177,33 @@ function uvMeta(uv, color) {
   if (uv >= 6) return { label: "High", color: color || "orange" };
   if (uv >= 3) return { label: "Moderate", color: color || "amber" };
   return { label: "Low", color: color || "green" };
+}
+
+function pm25Meta(value, color) {
+  if (value == null) return { label: "PM2.5", color: color || "grey" };
+  if (value >= 55) return { label: "Unhealthy", color: color || "red" };
+  if (value >= 35) return { label: "Sensitive", color: color || "orange" };
+  if (value >= 12) return { label: "Moderate", color: color || "amber" };
+  return { label: "Good", color: color || "green" };
+}
+
+function beaufort(mph) {
+  if (mph == null) return null;
+  const s = Number(mph);
+  if (!Number.isFinite(s)) return null;
+  if (s < 1) return 0;
+  if (s < 4) return 1;
+  if (s < 8) return 2;
+  if (s < 13) return 3;
+  if (s < 19) return 4;
+  if (s < 25) return 5;
+  if (s < 32) return 6;
+  if (s < 39) return 7;
+  if (s < 47) return 8;
+  if (s < 55) return 9;
+  if (s < 64) return 10;
+  if (s < 73) return 11;
+  return 12;
 }
 
 function applyPrefix(config) {
@@ -195,13 +252,26 @@ function relativeTime(date, locale) {
   return rtf.format(Math.round(diffSec / (86400 * 30)), "month");
 }
 
+function entityAgeMs(st) {
+  if (!st) return null;
+  const raw = st.last_updated || st.last_changed;
+  if (!raw) return null;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? Date.now() - t : null;
+}
+
 function batteryInfo(st, threshold) {
   if (!st) return null;
   const n = num(st.state);
   if (n != null) {
     const limit = threshold == null || threshold === "" ? 20 : Number(threshold);
     const low = Number.isFinite(limit) && n <= limit;
-    return { low, text: low ? "Low Battery" : "Station battery OK", icon: low ? "mdi:battery-alert" : "mdi:battery" };
+    const pct = `${Math.round(n)}%`;
+    return {
+      low,
+      text: low ? `Low Battery · ${pct}` : `Station battery ${pct}`,
+      icon: low ? "mdi:battery-alert" : "mdi:battery",
+    };
   }
   const low = st.state === "on";
   return { low, text: low ? "Low Battery" : "Station battery OK", icon: low ? "mdi:battery-alert" : "mdi:battery" };
@@ -263,6 +333,14 @@ function convertValue(value, unit, target) {
   return { value, unit: unit || "" };
 }
 
+function pressureTrendMeta(current, previous) {
+  if (current == null || previous == null) return { label: "", icon: "mdi:minus", color: "grey" };
+  const delta = current - previous;
+  if (Math.abs(delta) < 0.02) return { label: "Steady", icon: "mdi:arrow-right", color: "grey" };
+  if (delta > 0) return { label: "Rising", icon: "mdi:arrow-top-right", color: "green" };
+  return { label: "Falling", icon: "mdi:arrow-bottom-right", color: "orange" };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Card                                                                        */
 /* -------------------------------------------------------------------------- */
@@ -292,23 +370,32 @@ class MushroomWeatherStationCard extends HTMLElement {
       units: {},
       actions: {},
       thresholds: {},
+      show_updated: true,
+      stale_minutes: 30,
+      forecast_days: 5,
+      show_beaufort: false,
       ...config,
     });
     this._forecastSubId = null;
+    this._renderSignature = null;
     this._ensureForecastSub();
-    this._render();
+    this._render(true);
   }
 
   set hass(hass) {
     this._hass = hass;
     this._ensureForecastSub();
-    this._render();
+    this._render(false);
   }
 
   disconnectedCallback() {
     if (this._forecastUnsub) {
       try { this._forecastUnsub(); } catch (_e) { /* ignore */ }
       this._forecastUnsub = null;
+    }
+    if (this._staleTimer) {
+      window.clearInterval(this._staleTimer);
+      this._staleTimer = null;
     }
   }
 
@@ -320,14 +407,14 @@ class MushroomWeatherStationCard extends HTMLElement {
     const layout = this._config?.layout || "full";
     if (layout === "chips") return 1;
     if (layout === "compact") return 4;
-    return 8;
+    return 9;
   }
 
   getGridOptions() {
     const layout = this._config?.layout || "full";
     if (layout === "chips") return { columns: 12, rows: 1 };
     if (layout === "compact") return { columns: 12, rows: 4 };
-    return { columns: 12, rows: 7 };
+    return { columns: 12, rows: 8 };
   }
 
   _st(key) {
@@ -369,6 +456,20 @@ class MushroomWeatherStationCard extends HTMLElement {
     if (this._config?.[hideKey]) return false;
     if (this._config?.show_empty) return true;
     return states.some((st) => available(st));
+  }
+
+  _watchedSignature() {
+    const entities = this._config?.entities || {};
+    const ids = Object.values(entities).filter(Boolean);
+    if (this._config?.weather_entity) ids.push(this._config.weather_entity);
+    const parts = ids.map((id) => {
+      const st = this._hass?.states?.[id];
+      if (!st) return `${id}:missing`;
+      return `${id}:${st.state}:${st.last_updated || ""}`;
+    });
+    parts.push(`cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.forecast_days}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}`);
+    parts.push(`fc:${(this._forecastDays || []).length}:${this._forecastError || ""}`);
+    return parts.join("|");
   }
 
   _handleAction(actionCfg, entityId) {
@@ -437,7 +538,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     const muted = !Number.isFinite(deg);
     return `
       <div class="compass" data-key="wind_direction" data-entity="${this._esc(this._st("wind_direction")?.entity_id || "")}">
-        <svg viewBox="0 0 100 100" class="compass-svg ${muted ? "muted" : ""}">
+        <svg viewBox="0 0 100 100" class="compass-svg ${muted ? "muted" : ""}" aria-hidden="true">
           <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-opacity="0.18" stroke-width="2"/>
           <circle cx="50" cy="50" r="3" fill="currentColor"/>
           <text x="50" y="16" text-anchor="middle" font-size="9" fill="currentColor">N</text>
@@ -464,6 +565,33 @@ class MushroomWeatherStationCard extends HTMLElement {
       })
       .join("");
     return `<div class="spark">${bars}</div>`;
+  }
+
+  _trackPressure(value) {
+    if (value == null) return pressureTrendMeta(null, null);
+    const prev = this._prevPressure;
+    if (prev == null || Math.abs(prev - value) > 0.0001) {
+      if (this._pressureSample != null && Math.abs(this._pressureSample - value) > 0.0001) {
+        this._prevPressure = this._pressureSample;
+      }
+      this._pressureSample = value;
+    }
+    return pressureTrendMeta(value, this._prevPressure);
+  }
+
+  _ensureStaleTimer() {
+    if (this._config?.show_updated === false) {
+      if (this._staleTimer) {
+        window.clearInterval(this._staleTimer);
+        this._staleTimer = null;
+      }
+      return;
+    }
+    if (this._staleTimer) return;
+    this._staleTimer = window.setInterval(() => {
+      this._renderSignature = null;
+      this._render(true);
+    }, 60000);
   }
 
   async _ensureForecastSub() {
@@ -494,7 +622,8 @@ class MushroomWeatherStationCard extends HTMLElement {
           (ev) => {
             this._forecastDays = ev?.forecast || [];
             this._forecastError = this._forecastDays.length ? null : "empty";
-            this._render();
+            this._renderSignature = null;
+            this._render(true);
           },
           { type: "weather/subscribe_forecast", forecast_type: "daily", entity_id: id },
         );
@@ -517,7 +646,8 @@ class MushroomWeatherStationCard extends HTMLElement {
     } catch (err) {
       this._forecastError = err?.message || "failed";
     }
-    this._render();
+    this._renderSignature = null;
+    this._render(true);
   }
 
   _forecast() {
@@ -526,7 +656,8 @@ class MushroomWeatherStationCard extends HTMLElement {
     const st = entityState(this._hass, id);
     if (!id) return `<div class="forecast hint">Pick a weather entity for forecast.</div>`;
     if (!st) return `<div class="forecast hint">Weather entity ${this._esc(id)} is missing.</div>`;
-    const days = (this._forecastDays || st.attributes.forecast || []).slice(0, 5);
+    const daysWanted = Math.min(7, Math.max(1, Number(this._config.forecast_days) || 5));
+    const days = (this._forecastDays || st.attributes.forecast || []).slice(0, daysWanted);
     if (!days.length) {
       return `<div class="forecast hint">Waiting for daily forecast from ${this._esc(id)}…</div>`;
     }
@@ -544,10 +675,12 @@ class MushroomWeatherStationCard extends HTMLElement {
             const hi = d.temperature != null ? convertValue(d.temperature, tempUnit, target) : null;
             const lo = d.templow != null ? convertValue(d.templow, tempUnit, target) : null;
             const icon = WEATHER_ICONS[d.condition] || "mdi:weather-partly-cloudy";
+            const pop = d.precipitation_probability != null ? Math.round(Number(d.precipitation_probability)) : null;
             return `<div class="fday" data-key="forecast" data-entity="${this._esc(id)}">
               <div class="fday-name">${this._esc(day)}</div>
               <ha-icon icon="${icon}"></ha-icon>
               <div class="fday-temp">${hi ? Math.round(hi.value) : "—"}°${lo ? ` / ${Math.round(lo.value)}°` : ""}</div>
+              ${pop != null ? `<div class="fday-pop">${pop}%</div>` : ""}
             </div>`;
           })
           .join("")}
@@ -555,9 +688,18 @@ class MushroomWeatherStationCard extends HTMLElement {
     `;
   }
 
-  _render() {
+  _render(force = false) {
     if (!this._config) return;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._ensureStaleTimer();
+
+    if (!force && this._hass) {
+      const sig = this._watchedSignature();
+      if (sig === this._renderSignature) return;
+      this._renderSignature = sig;
+    } else if (this._hass) {
+      this._renderSignature = this._watchedSignature();
+    }
 
     const layout = this._config.layout || "full";
     const compact = layout === "compact";
@@ -589,6 +731,14 @@ class MushroomWeatherStationCard extends HTMLElement {
     const indoorT = this._st("indoor_temperature");
     const indoorH = this._st("indoor_humidity");
     const co2 = this._st("co2");
+    const pm25 = this._st("pm25");
+    const soil1 = this._st("soil_moisture_1");
+    const soil2 = this._st("soil_moisture_2");
+    const soil3 = this._st("soil_moisture_3");
+    const soil4 = this._st("soil_moisture_4");
+    const lightningCount = this._st("lightning_count");
+    const lightningDistance = this._st("lightning_distance");
+    const lightningTime = this._st("lightning_time");
     const battery = this._st("battery");
 
     const t = this._conv(temp, "°F");
@@ -599,14 +749,28 @@ class MushroomWeatherStationCard extends HTMLElement {
     const d = this._conv(dew, "°F");
     const ws = this._conv(wind, "mph");
     const wg = this._conv(gust, "mph");
-    const deg = num(wdir?.state);
-    const card = degToCardinal(deg);
+    const windDir = parseWindDirection(wdir);
+    const deg = windDir.deg;
+    const card = windDir.card;
     const rr = this._conv(rate, unitOf(rate) || "in/h");
     const uvn = num(uv?.state);
     const raining = rr.value != null && rr.value > 0;
     const tColor = this._color("temperature", t.raw, "grey");
     const uvColor = this._color("uv", uvn, "grey");
     const uvm = uvMeta(uvn, uvColor);
+    const pm = num(pm25?.state);
+    const pmm = pm25Meta(pm, this._color("pm25", pm, "grey"));
+    const pressureConv = this._conv(pressure, unitOf(pressure) || "inHg");
+    const trend = this._trackPressure(pressureConv.value);
+    const bf = this._config.show_beaufort ? beaufort(ws.value) : null;
+
+    const ageMs = entityAgeMs(temp) ?? entityAgeMs(pressure) ?? entityAgeMs(wind);
+    const staleLimit = Number(this._config.stale_minutes);
+    const staleMinutes = Number.isFinite(staleLimit) ? staleLimit : 30;
+    const isStale = ageMs != null && staleMinutes > 0 && ageMs > staleMinutes * 60000;
+    const updatedLabel = ageMs == null
+      ? null
+      : relativeTime(new Date(Date.now() - ageMs), hass?.locale?.language);
 
     const heroIcon = raining
       ? rr.raw >= 0.3
@@ -623,6 +787,9 @@ class MushroomWeatherStationCard extends HTMLElement {
     const showRain = this._sectionVisible("hide_rain", [rate, today, event, week, month, year, lastRain]);
     const showSun = this._sectionVisible("hide_sun", [uv, irr, lux]);
     const showMore = this._sectionVisible("hide_more", [pressure, pressureAbs, indoorT, indoorH, co2]);
+    const showSoil = this._sectionVisible("hide_soil", [soil1, soil2, soil3, soil4]);
+    const showLightning = this._sectionVisible("hide_lightning", [lightningCount, lightningDistance, lightningTime]);
+    const showAir = this._sectionVisible("hide_air", [pm25]);
     const showBattery = !this._config.hide_battery && !!battery;
     const showBody = layout !== "chips";
     const showExtra = layout === "full" || compact;
@@ -630,17 +797,30 @@ class MushroomWeatherStationCard extends HTMLElement {
     const missing = !temp && !this._config.entities?.temperature;
     const sectionTitle = (label) => (compact ? "" : `<div class="section-label">${this._esc(label)}</div>`);
     const tempUnit = this._unitStr("temperature", temp, t.unit || "°");
+    const showUpdated = this._config.show_updated !== false;
+
+    const subtitleBits = [];
+    if (raining) {
+      subtitleBits.push(`Raining · ${fmtNum(rr.value, 2)} ${this._esc(this._unitStr("rain_rate", rate, rr.unit || "in/h"))}`);
+    } else {
+      subtitleBits.push("Station");
+    }
+    if (hi.value != null || lo.value != null) {
+      subtitleBits.push(`H ${hi.value == null ? "—" : Math.round(hi.value)}° / L ${lo.value == null ? "—" : Math.round(lo.value)}°`);
+    }
+    if (showUpdated && updatedLabel) {
+      subtitleBits.push(isStale ? `Stale · ${updatedLabel}` : `Updated ${updatedLabel}`);
+    }
 
     const html = `
       <style>${MushroomWeatherStationCard.styles}</style>
-      <ha-card class="${compact ? "compact" : layout}">
+      <ha-card class="${compact ? "compact" : layout}${isStale ? " stale" : ""}">
         ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, raining) : ""}
         ${showBody ? `
           <div class="header">
             <div class="title">${this._esc(name)}</div>
-            <div class="subtitle">
-              ${raining ? `Raining · ${fmtNum(rr.value, 2)} ${this._esc(this._unitStr("rain_rate", rate, rr.unit || "in/h"))}` : "Station"}
-              ${hi.value != null || lo.value != null ? ` · H ${hi.value == null ? "—" : Math.round(hi.value)}° / L ${lo.value == null ? "—" : Math.round(lo.value)}°` : ""}
+            <div class="subtitle ${isStale ? "warn" : ""}">
+              ${subtitleBits.join(" · ")}
             </div>
           </div>
           <button class="hero" data-key="temperature" data-entity="${this._esc(temp?.entity_id || "")}">
@@ -667,7 +847,7 @@ class MushroomWeatherStationCard extends HTMLElement {
           <div class="wind-row">
             ${this._compass(deg, card)}
             <div class="grid wind-grid">
-              ${this._tile("wind_speed", this._label("wind_speed", "Speed"), wind, ws.value == null ? "—" : `${fmtNum(ws.value, 1)} ${this._esc(this._unitStr("wind_speed", wind, ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ws.raw, "teal"))}
+              ${this._tile("wind_speed", this._label("wind_speed", bf != null ? `Speed · B${bf}` : "Speed"), wind, ws.value == null ? "—" : `${fmtNum(ws.value, 1)} ${this._esc(this._unitStr("wind_speed", wind, ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ws.raw, "teal"))}
               ${this._tile("wind_gust", this._label("wind_gust", "Gust"), gust, wg.value == null ? "—" : `${fmtNum(wg.value, 1)}`, "mdi:windsock", this._color("wind_gust", wg.raw, "teal"))}
               ${this._tile("max_gust", this._label("max_gust", "Max gust"), maxGust, num(maxGust?.state) == null ? "—" : this._fmt("max_gust", maxGust, 1, "mph"), "mdi:weather-windy-variant", "teal")}
             </div>
@@ -700,10 +880,33 @@ class MushroomWeatherStationCard extends HTMLElement {
             ${this._tile("illuminance", this._label("illuminance", "Light"), lux, num(lux?.state) == null ? "—" : `${fmtNum(num(lux?.state), 0)} ${this._esc(this._unitStr("illuminance", lux, "lx"))}`, "mdi:brightness-5", "amber")}
           </div>
         ` : ""}
+        ${showExtra && showSoil ? `
+          ${sectionTitle("Soil")}
+          <div class="grid">
+            ${this._tile("soil_moisture_1", this._label("soil_moisture_1", "Soil 1"), soil1, num(soil1?.state) == null ? "—" : `${Math.round(num(soil1?.state))}%`, "mdi:water", this._color("soil_moisture_1", num(soil1?.state), "green"))}
+            ${this._tile("soil_moisture_2", this._label("soil_moisture_2", "Soil 2"), soil2, num(soil2?.state) == null ? "—" : `${Math.round(num(soil2?.state))}%`, "mdi:water", this._color("soil_moisture_2", num(soil2?.state), "green"))}
+            ${this._tile("soil_moisture_3", this._label("soil_moisture_3", "Soil 3"), soil3, num(soil3?.state) == null ? "—" : `${Math.round(num(soil3?.state))}%`, "mdi:water", this._color("soil_moisture_3", num(soil3?.state), "green"))}
+            ${this._tile("soil_moisture_4", this._label("soil_moisture_4", "Soil 4"), soil4, num(soil4?.state) == null ? "—" : `${Math.round(num(soil4?.state))}%`, "mdi:water", this._color("soil_moisture_4", num(soil4?.state), "green"))}
+          </div>
+        ` : ""}
+        ${showExtra && showLightning ? `
+          ${sectionTitle("Lightning")}
+          <div class="grid">
+            ${this._tile("lightning_count", this._label("lightning_count", "Strikes"), lightningCount, num(lightningCount?.state) == null ? "—" : `${fmtNum(num(lightningCount?.state), 0)}`, "mdi:flash", num(lightningCount?.state) > 0 ? "amber" : "grey")}
+            ${this._tile("lightning_distance", this._label("lightning_distance", "Distance"), lightningDistance, num(lightningDistance?.state) == null ? "—" : `${fmtNum(num(lightningDistance?.state), 0)} ${this._esc(this._unitStr("lightning_distance", lightningDistance, unitOf(lightningDistance) || "mi"))}`, "mdi:map-marker-distance", "orange")}
+            ${this._tile("lightning_time", this._label("lightning_time", "Last strike"), lightningTime, formatLastRain(lightningTime, hass), "mdi:clock-outline", "amber")}
+          </div>
+        ` : ""}
+        ${showExtra && showAir ? `
+          ${sectionTitle("Air quality")}
+          <div class="grid">
+            ${this._tile("pm25", this._label("pm25", pmm.label), pm25, pm == null ? "—" : `${fmtNum(pm, 0)} ${this._esc(this._unitStr("pm25", pm25, unitOf(pm25) || "µg/m³"))}`, "mdi:air-filter", pmm.color)}
+          </div>
+        ` : ""}
         ${showExtra && showMore ? `
           ${sectionTitle("Station")}
           <div class="grid">
-            ${this._tile("pressure", this._label("pressure", "Pressure"), pressure, this._fmt("pressure", pressure, 2, unitOf(pressure) || "inHg"), "mdi:gauge", "teal")}
+            ${this._tile("pressure", this._label("pressure", trend.label ? `Pressure · ${trend.label}` : "Pressure"), pressure, this._fmt("pressure", pressure, 2, unitOf(pressure) || "inHg"), trend.icon || "mdi:gauge", trend.color === "grey" ? "teal" : trend.color)}
             ${this._tile("pressure_abs", this._label("pressure_abs", "Abs pressure"), pressureAbs, this._fmt("pressure_abs", pressureAbs, 2, unitOf(pressureAbs) || "inHg"), "mdi:gauge", "teal")}
             ${this._tile("indoor_temperature", this._label("indoor_temperature", "Indoor"), indoorT, indoorT ? `${fmtNum(this._conv(indoorT, "°F").value, 1)}°` : "—", "mdi:home-thermometer", this._color("temperature", num(indoorT?.state), "green"))}
             ${this._tile("indoor_humidity", this._label("indoor_humidity", "Indoor RH"), indoorH, num(indoorH?.state) == null ? "—" : `${Math.round(num(indoorH?.state))}%`, "mdi:water-percent", this._color("humidity", num(indoorH?.state), "cyan"))}
@@ -763,11 +966,13 @@ class MushroomWeatherStationCard extends HTMLElement {
       :host { display: block; }
       ha-card { padding: 12px 12px 8px; background: var(--ha-card-background, var(--card-background-color)); }
       ha-card.compact { padding: 8px 8px 6px; }
+      ha-card.stale { box-shadow: inset 0 0 0 1px var(--warning-color, #ff9800); }
       .header { padding: 4px 4px 8px; }
       ha-card.compact .header { padding: 2px 2px 4px; }
       .title { font-weight: 600; font-size: 16px; color: var(--primary-text-color); }
       ha-card.compact .title { font-size: 14px; }
       .subtitle { font-size: 13px; color: var(--secondary-text-color); margin-top: 2px; }
+      .subtitle.warn { color: var(--warning-color, #ff9800); }
       .hero { display: flex; align-items: center; gap: 12px; width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 4px 4px 12px; cursor: pointer; }
       ha-card.compact .hero { padding: 2px 2px 6px; gap: 8px; }
       .hero-icon { --mdc-icon-size: 36px; }
@@ -794,6 +999,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       .fday { flex: 1; min-width: 64px; text-align: center; background: var(--secondary-background-color, rgba(0,0,0,0.08)); border-radius: 12px; padding: 8px 4px; cursor: pointer; }
       .fday-name { font-size: 11px; color: var(--secondary-text-color); }
       .fday-temp { font-size: 12px; font-weight: 600; }
+      .fday-pop { font-size: 11px; color: var(--cyan-color, #00bcd4); margin-top: 2px; }
       .tile { display: flex; flex-direction: column; align-items: center; gap: 4px; border: 0; background: var(--secondary-background-color, rgba(0,0,0,0.08)); border-radius: 12px; padding: 10px 4px 8px; color: inherit; cursor: pointer; min-height: 88px; }
       ha-card.compact .tile { padding: 6px 2px 4px; gap: 2px; min-height: 64px; border-radius: 10px; }
       .tile[disabled] { opacity: 0.45; cursor: default; }
