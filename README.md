@@ -1,6 +1,6 @@
 # Mushroom Weather Station Card
 
-A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Prefix auto-fill, Home Assistant entity pickers, heat/UV coloring, wind compass, and rain sparkline.
+A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine Offset, and similar). Prefix auto-fill, Home Assistant entity pickers, heat/UV coloring, wind compass, hourly + daily forecast, history sparklines, and weather alerts.
 
 ![Mushroom Weather Station Card](images/card-preview.svg)
 
@@ -15,7 +15,16 @@ A Lovelace card for **personal weather station** sensors (Ecowitt, Ambient, Fine
 
 One `prefix` field maps Ecowitt-style entity IDs (`sensor.ws_temperature`, `sensor.ws_daily_rain`, …). Override any slot with a real Home Assistant entity picker. Mushroom itself is **not required**.
 
-Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.6.0**.
+Confirm the install in the card editor banner: **Mushroom Weather Station Card · v0.7.0**.
+
+### Not seeing the new version?
+
+1. HACS → Frontend → **Mushroom Weather Station Card** → check for updates / redownload
+2. Hard-refresh the browser (Ctrl+F5 / Cmd+Shift+R)
+3. Open the card editor and confirm the banner shows **v0.7.0** (not an older build)
+4. If the banner is stale, clear Lovelace resource cache or bump the resource URL with `?v=0.7.0`
+
+HACS only sees published **GitHub releases** (not commits on `main`).
 
 ## Install with HACS
 
@@ -43,9 +52,13 @@ name: Backyard Station
 prefix: ws
 layout: full
 unit_system: native
+show_hourly_forecast: true
+show_history_sparklines: true
+show_wind_rose: true
+show_alerts: true
 ```
 
-Layouts: `full`, `compact`, `chips`.
+Layouts: `full`, `compact`, `chips` (glance bar with tap-to-expand).
 
 ## Options
 
@@ -53,8 +66,18 @@ Layouts: `full`, `compact`, `chips`.
 unit_system: imperial   # or metric | native
 tablet_mode: true
 show_forecast: true
+show_hourly_forecast: true
+hourly_forecast_hours: 24
+show_history_sparklines: true
+history_hours: 24
+show_wind_rose: true
+show_alerts: true
 weather_entity: weather.home
+alert_entity: binary_sensor.nws_alert   # optional
+sun_entity: sun.sun
+moon_entity: sensor.moon_phase
 forecast_days: 5
+rain_month_normal: 2.5
 show_updated: true
 stale_minutes: 30
 show_beaufort: false
@@ -90,9 +113,11 @@ units:
 
 ### Section order
 
-Use `section_order` (or the editor **Order** tab) to rearrange blocks after the hero. Valid ids: `conditions`, `wind`, `rain`, `sun`, `soil`, `lightning`, `air`, `station`, `forecast`, `battery`.
+Use `section_order` (or the editor **Order** tab — drag to reorder) to rearrange blocks after the hero. Valid ids: `conditions`, `wind`, `rain`, `sun`, `soil`, `lightning`, `air`, `station`, `forecast`, `battery`.
 
 Visual editor tabs: **Layout** · **Entities** · **Order** · **Display**.
+
+Display thresholds follow `unit_system` (°F/°C for the cold cutoff).
 
 ## Develop
 
@@ -104,6 +129,8 @@ npm run demo    # http://127.0.0.1:8765/demo/
 ```
 
 Source lives in `src/`. HACS still ships the built files in `dist/`.
+
+Pushing a new `package.json` version to `main` triggers **Auto Release** so HACS can update.
 
 ## Just to be clear
 

@@ -1,0 +1,73 @@
+name: Auto Release
+
+# Publishes a GitHub release whenever package.json version on main changes,
+# so HACS picks up updates without a manual Actions dispatch.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: ver
+        run: |
+          VER=$(node -p "require('./package.json').version")
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          if git rev-parse "v$VER" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if tag exists
+        if: steps.ver.outputs.exists == 'true'
+        run: echo "Tag v${{ steps.ver.outputs.version }} already exists — skipping."
+
+      - name: Setup Node
+        if: steps.ver.outputs.exists == 'false'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install, stamp, build
+        if: steps.ver.outputs.exists == 'false'
+        run: |
+          npm ci
+          bash scripts/set-version.sh "${{ steps.ver.outputs.version }}"
+          npm test
+          npm run build
+
+      - name: Tag and publish
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Release v${VER} (auto)"
+            git push origin HEAD:main
+          fi
+          git tag "v${VER}"
+          git push origin "v${VER}"
+          gh release create "v${VER}" \
+            dist/mushroom-weather-station-card.js \
+            dist/mushroom-weather-station-card-editor.js \
+            --title "v${VER}" \
+            --latest \
+            --generate-notes

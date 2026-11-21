@@ -20,7 +20,22 @@ fi
 sed -i -E "s/(export const CARD_VERSION = \")[^\"]+(\";)/\\1${VER}\\2/" "$version_ts"
 
 if [[ -f "$ROOT/package.json" ]]; then
-  sed -i -E "s/(\"version\": \")[^\"]+(\")/\\1${VER}\\2/" "$ROOT/package.json"
+  # Only stamp the top-level package version, not scripts.version.
+  sed -i -E "0,/(\"version\": \")[^\"]+(\")/s//\\1${VER}\\2/" "$ROOT/package.json"
+fi
+if [[ -f "$ROOT/package-lock.json" ]]; then
+  sed -i -E "0,/(\"version\": \")[^\"]+(\")/s//\\1${VER}\\2/" "$ROOT/package-lock.json"
+  # Also stamp the "" package entry version when present.
+  python3 - <<PY
+import json
+from pathlib import Path
+p = Path("$ROOT/package-lock.json")
+data = json.loads(p.read_text())
+data["version"] = "$VER"
+if "" in data.get("packages", {}):
+    data["packages"][""]["version"] = "$VER"
+p.write_text(json.dumps(data, indent=2) + "\n")
+PY
 fi
 
 readme="$ROOT/README.md"

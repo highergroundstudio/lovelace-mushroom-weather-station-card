@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.0 — 2026-11-21
+
+Station dashboard upgrade.
+
+- **Hourly forecast strip** — next 6–24h with temp + precip % (`show_hourly_forecast`, `hourly_forecast_hours`)
+- **History sparklines** — mini charts on temperature, humidity, wind, pressure (HA history API)
+- **Weather alerts banner** — from `weather` attributes or `alert_entity`, severity colors above the hero
+- **More sensors** — leaf wetness, soil moisture/temp channels 1–8, AQI, VOC, noise
+- **Sunrise / sunset / moon** — `sun_entity` + `moon_entity` in the sun section
+- **Wind rose** — 24h direction distribution beside the compass (`show_wind_rose`)
+- **Rain goals** — month vs `rain_month_normal` progress + days since last rain
+- **Theme tokens** — deeper HA `--primary-color` / `--accent-color` integration
+- **Chip glance bar** — denser chips with tap-to-expand secondary metrics
+- **Editor drag-and-drop** — section Order tab uses HTML5 drag reorder
+- **Unit-aware thresholds** — temp blue cutoff shown in °C/°F from `unit_system`
+- **Auto-release** — GitHub Action publishes HACS release when `package.json` version changes on `main`
+
 ## 0.6.0 — 2026-11-21
 
 Developer and UI upgrade.
@@ -64,7 +81,7 @@ Documented only — JS was not published to `dist/`.
 
 ## 0.2.0 — 2026-08-31
 
-- Entity pickers planned; dist still 0.1.0 on GitHub
+- Entity picker planned; dist still 0.1.0 on GitHub
 
 ## 0.1.0 — 2026-08-31
 
