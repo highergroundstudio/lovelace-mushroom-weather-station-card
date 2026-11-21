@@ -717,10 +717,13 @@ class MushroomWeatherStationCard extends HTMLElement {
     }
     if (this._hass.callApi) {
       const sig = significantOnly ? 1 : 0;
-      return this._hass.callApi(
-        "GET",
-        `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&significant_changes_only=${sig}&minimal_response`,
-      );
+      // HA REST defaults omitted end_time to start+1 day — always pass end.
+      const q =
+        `history/period/${start.toISOString()}`
+        + `?filter_entity_id=${entityIds.join(",")}`
+        + `&end_time=${encodeURIComponent(end.toISOString())}`
+        + `&significant_changes_only=${sig}&minimal_response`;
+      return this._hass.callApi("GET", q);
     }
     return null;
   }
@@ -771,8 +774,10 @@ class MushroomWeatherStationCard extends HTMLElement {
 
       const next = this._ingestHistoryRaw(raw, keyById);
       for (const [key, pts] of Object.entries(next)) {
-        // Preserve peaks for rain-rate timeline and gust; uniform thin is fine for sparklines/comfort.
-        if (key === "rain_rate" || key === "wind_gust") {
+        if (key === "rain_rate") {
+          // Keep transitions (including zeros) for interval-filled precip timeline.
+          next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
+        } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
           next[key] = downsampleHistory(pts, 72);

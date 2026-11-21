@@ -592,10 +592,37 @@ export function precipTimelineBars(points: HistoryPoint[], hours: number, bucket
     }
     return { label, value: 0, start: t0 };
   });
-  for (const p of points) {
-    if (!Number.isFinite(p.state) || p.last_changed < start) continue;
-    const idx = Math.min(width - 1, Math.max(0, Math.floor(((p.last_changed - start) / span) * width)));
-    bars[idx].value = Math.max(bars[idx].value, p.state);
+
+  // Minimal/significant history only records transitions. Apply each rate from its
+  // change until the next change (clipped to the window) so sustained rain fills
+  // every overlapping bucket; zero-rate intervals stay dry.
+  const sorted = [...points]
+    .filter((p) => Number.isFinite(p.state))
+    .sort((a, b) => a.last_changed - b.last_changed);
+  if (!sorted.length) return bars;
+
+  let carryIdx = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].last_changed <= start) carryIdx = i;
+    else break;
+  }
+
+  const paint = (t0: number, t1: number, rate: number) => {
+    if (!(rate > 0) || !(t1 > t0)) return;
+    const i0 = Math.max(0, Math.floor(((t0 - start) / span) * width));
+    const i1 = Math.min(width - 1, Math.floor(((Math.min(t1, end) - 1 - start) / span) * width));
+    for (let i = i0; i <= i1; i++) bars[i].value = Math.max(bars[i].value, rate);
+  };
+
+  if (carryIdx >= 0) {
+    const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+    paint(start, Math.min(end, t1), sorted[carryIdx].state);
+  }
+  for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const t0 = Math.max(start, sorted[i].last_changed);
+    if (t0 >= end) break;
+    const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
+    paint(t0, t1, sorted[i].state);
   }
   return bars;
 }
@@ -617,19 +644,19 @@ export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): 
   return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
 
-function nearestHumidity(at: number, humidity: HistoryPoint[]): number | null {
-  if (!humidity.length) return null;
-  let best = humidity[0];
-  let bestDist = Math.abs(best.last_changed - at);
-  for (const p of humidity) {
-    const d = Math.abs(p.last_changed - at);
-    if (d < bestDist) {
-      best = p;
-      bestDist = d;
-    }
+/**
+ * Humidity valid at `at`: last sample at or before that time.
+ * HA minimal history omits unchanged duplicates, so a reading hours earlier is
+ * still the live value — do not require proximity or pick a future change.
+ */
+function humidityAt(at: number, humidityAsc: HistoryPoint[]): number | null {
+  if (!humidityAsc.length) return null;
+  let best: HistoryPoint | null = null;
+  for (const p of humidityAsc) {
+    if (p.last_changed <= at) best = p;
+    else break;
   }
-  // Ignore humidity samples more than 45 minutes from the temp sample.
-  return bestDist <= 45 * 60 * 1000 ? best.state : null;
+  return best ? best.state : null;
 }
 
 export function comfortBandFromConfig(config: CardConfig | undefined): {
@@ -658,10 +685,11 @@ export function comfortStats(
   const samples: Array<{ temp: number; humidity: number }> = [];
   let hoursIn = 0;
   let hoursTotal = 0;
+  const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
   // Approximate dwell time from consecutive samples (capped at 30 minutes each).
   for (let i = 0; i < tempPoints.length; i++) {
     const t = tempPoints[i];
-    const h = nearestHumidity(t.last_changed, humidityPoints);
+    const h = humidityAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });
     const next = tempPoints[i + 1];

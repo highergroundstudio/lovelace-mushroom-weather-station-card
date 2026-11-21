@@ -671,10 +671,28 @@ function precipTimelineBars(points, hours, buckets = 24) {
     }
     return { label, value: 0, start: t0 };
   });
-  for (const p of points) {
-    if (!Number.isFinite(p.state) || p.last_changed < start) continue;
-    const idx = Math.min(width - 1, Math.max(0, Math.floor((p.last_changed - start) / span * width)));
-    bars[idx].value = Math.max(bars[idx].value, p.state);
+  const sorted = [...points].filter((p) => Number.isFinite(p.state)).sort((a, b) => a.last_changed - b.last_changed);
+  if (!sorted.length) return bars;
+  let carryIdx = -1;
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].last_changed <= start) carryIdx = i;
+    else break;
+  }
+  const paint = (t0, t1, rate) => {
+    if (!(rate > 0) || !(t1 > t0)) return;
+    const i0 = Math.max(0, Math.floor((t0 - start) / span * width));
+    const i1 = Math.min(width - 1, Math.floor((Math.min(t1, end) - 1 - start) / span * width));
+    for (let i = i0; i <= i1; i++) bars[i].value = Math.max(bars[i].value, rate);
+  };
+  if (carryIdx >= 0) {
+    const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+    paint(start, Math.min(end, t1), sorted[carryIdx].state);
+  }
+  for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const t0 = Math.max(start, sorted[i].last_changed);
+    if (t0 >= end) break;
+    const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
+    paint(t0, t1, sorted[i].state);
   }
   return bars;
 }
@@ -692,18 +710,14 @@ function precipTimelineSvg(bars, width = 280, height = 44) {
   }).join("");
   return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
-function nearestHumidity(at, humidity) {
-  if (!humidity.length) return null;
-  let best = humidity[0];
-  let bestDist = Math.abs(best.last_changed - at);
-  for (const p of humidity) {
-    const d = Math.abs(p.last_changed - at);
-    if (d < bestDist) {
-      best = p;
-      bestDist = d;
-    }
+function humidityAt(at, humidityAsc) {
+  if (!humidityAsc.length) return null;
+  let best = null;
+  for (const p of humidityAsc) {
+    if (p.last_changed <= at) best = p;
+    else break;
   }
-  return bestDist <= 45 * 60 * 1e3 ? best.state : null;
+  return best ? best.state : null;
 }
 function comfortBandFromConfig(config) {
   const tempMin = num(config?.comfort_temp_min);
@@ -721,9 +735,10 @@ function comfortStats(tempPoints, humidityPoints, band) {
   const samples = [];
   let hoursIn = 0;
   let hoursTotal = 0;
+  const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
   for (let i = 0; i < tempPoints.length; i++) {
     const t = tempPoints[i];
-    const h = nearestHumidity(t.last_changed, humidityPoints);
+    const h = humidityAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });
     const next = tempPoints[i + 1];
@@ -1332,7 +1347,7 @@ const CARD_STYLES = `
     align-items: baseline;
   }
   .comfort-title { font-size: 13px; font-weight: 650; }
-  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--mws-primary); }
+  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--primary-text-color); }
   .comfort-track {
     height: 8px;
     border-radius: 999px;
@@ -1966,10 +1981,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     if (this._hass.callApi) {
       const sig = significantOnly ? 1 : 0;
-      return this._hass.callApi(
-        "GET",
-        `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&significant_changes_only=${sig}&minimal_response`
-      );
+      const q = `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=${sig}&minimal_response`;
+      return this._hass.callApi("GET", q);
     }
     return null;
   }
@@ -2011,7 +2024,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (raw == null || token !== this._historyToken) return;
       const next = this._ingestHistoryRaw(raw, keyById);
       for (const [key, pts] of Object.entries(next)) {
-        if (key === "rain_rate" || key === "wind_gust") {
+        if (key === "rain_rate") {
+          next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
+        } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
           next[key] = downsampleHistory(pts, 72);

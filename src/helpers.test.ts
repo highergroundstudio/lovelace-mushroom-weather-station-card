@@ -208,18 +208,33 @@ describe("0.8 helpers", () => {
     expect(bars.length).toBe(12);
     expect(Math.max(...bars.map((b) => b.value))).toBeGreaterThan(0);
 
+    // Sustained rate with only a start+stop transition fills intervening buckets.
+    const sustained = precipTimelineBars(
+      [
+        { state: 0.4, last_changed: now - 3 * 3600_000 },
+        { state: 0, last_changed: now - 3600_000 },
+      ],
+      6,
+      12,
+    );
+    const wetBuckets = sustained.filter((b) => b.value > 0).length;
+    expect(wetBuckets).toBeGreaterThan(2);
+
     const comfort = comfortStats(
       [
         { state: 70, last_changed: now - 3600_000 },
+        { state: 72, last_changed: now - 1800_000 },
         { state: 90, last_changed: now },
       ],
       [
+        // Unchanged humidity for 90m — still valid at the mid temp sample.
         { state: 45, last_changed: now - 3600_000 },
         { state: 80, last_changed: now },
       ],
       { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
     );
-    expect(comfort.samples.length).toBe(2);
+    expect(comfort.samples.length).toBe(3);
+    expect(comfort.samples[1]?.humidity).toBe(45);
     expect(comfort.hoursIn).toBeGreaterThan(0);
 
     expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "north")).toBe("summer");

@@ -543,7 +543,7 @@ export const CARD_STYLES = `
     align-items: baseline;
   }
   .comfort-title { font-size: 13px; font-weight: 650; }
-  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--mws-primary); }
+  .comfort-pct { font-size: 18px; font-weight: 700; color: var(--primary-text-color); }
   .comfort-track {
     height: 8px;
     border-radius: 999px;
