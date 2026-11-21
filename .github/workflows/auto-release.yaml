@@ -88,8 +88,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           need_push=false
-          # Commit stamp/build first so rebase is not blocked by a dirty tree.
-          git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
+          # Commit every set-version.sh / build output so rebase is not blocked by a dirty tree.
+          stamp_files=(
+            src/version.ts
+            package.json
+            package-lock.json
+            README.md
+            dist/mushroom-weather-station-card.js
+            dist/mushroom-weather-station-card-editor.js
+          )
+          git add "${stamp_files[@]}" || true
           if ! git diff --cached --quiet; then
             git commit -m "Release v${VER} (auto)"
             need_push=true
@@ -102,7 +110,7 @@ jobs:
             bash scripts/set-version.sh "$VER"
             npm test
             npm run build
-            git add src/version.ts dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js || true
+            git add "${stamp_files[@]}" || true
             if ! git diff --cached --quiet; then
               git commit -m "Release v${VER} (auto rebuild)"
             fi
