@@ -516,6 +516,29 @@ export function downsampleHistory(points: HistoryPoint[], maxPoints = 36): Histo
   return out;
 }
 
+/** Keep the max (or min) sample in each bucket so peaks survive thinning. */
+export function downsampleHistoryExtrema(
+  points: HistoryPoint[],
+  maxPoints = 72,
+  mode: "max" | "min" = "max",
+): HistoryPoint[] {
+  if (points.length <= maxPoints) return points;
+  const out: HistoryPoint[] = [];
+  const bucket = points.length / maxPoints;
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
+    let best = points[start];
+    for (let j = start + 1; j < end && j < points.length; j++) {
+      if (mode === "max" ? points[j].state > best.state : points[j].state < best.state) {
+        best = points[j];
+      }
+    }
+    out.push(best);
+  }
+  return out;
+}
+
 export function historyExtreme(
   points: HistoryPoint[],
   mode: "min" | "max",
@@ -538,9 +561,19 @@ export function buildRecordBook(history: Record<string, HistoryPoint[]>): Record
   };
 }
 
-export function isNearRecord(current: number | null, record: HistoryExtreme | null, epsilon = 0.15): boolean {
-  if (current == null || !record) return false;
-  return Math.abs(current - record.value) <= epsilon;
+function sameLocalDay(a: number, b = Date.now()): boolean {
+  const da = new Date(a);
+  const db = new Date(b);
+  return (
+    da.getFullYear() === db.getFullYear()
+    && da.getMonth() === db.getMonth()
+    && da.getDate() === db.getDate()
+  );
+}
+
+/** True only when the extreme itself was recorded today (local calendar day). */
+export function isRecordSetToday(record: HistoryExtreme | null, now = Date.now()): boolean {
+  return !!record && Number.isFinite(record.at) && sameLocalDay(record.at, now);
 }
 
 export function precipTimelineBars(points: HistoryPoint[], hours: number, buckets = 24): PrecipBar[] {

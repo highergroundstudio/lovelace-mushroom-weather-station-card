@@ -29,6 +29,7 @@ import {
   currentSeason,
   daysSinceTimestamp,
   downsampleHistory,
+  downsampleHistoryExtrema,
   entityAgeMs,
   entityState,
   esc,
@@ -37,7 +38,7 @@ import {
   formatSunTime,
   historyLineSpark,
   iconColorVar,
-  isNearRecord,
+  isRecordSetToday,
   mergeThresholds,
   moonMeta,
   normalizeSectionOrder,
@@ -100,6 +101,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _historyFetchedAt = 0;
   private _historyPending = false;
   private _recordsHistory: Record<string, HistoryPoint[]> = {};
+  private _recordsBook: ReturnType<typeof buildRecordBook> | null = null;
   private _recordsToken = 0;
   private _recordsFetchedAt = 0;
   private _recordsPending = false;
@@ -180,6 +182,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
+    this._recordsBook = null;
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
     this._renderSignature = null;
@@ -768,7 +771,12 @@ class MushroomWeatherStationCard extends HTMLElement {
 
       const next = this._ingestHistoryRaw(raw, keyById);
       for (const [key, pts] of Object.entries(next)) {
-        next[key] = downsampleHistory(pts, 72);
+        // Preserve peaks for rain-rate timeline and gust; uniform thin is fine for sparklines/comfort.
+        if (key === "rain_rate" || key === "wind_gust") {
+          next[key] = downsampleHistoryExtrema(pts, 96, "max");
+        } else {
+          next[key] = downsampleHistory(pts, 72);
+        }
       }
 
       this._history = next;
@@ -807,11 +815,23 @@ class MushroomWeatherStationCard extends HTMLElement {
       // Significant-only keeps month/year payloads manageable.
       const raw = await this._fetchHistoryRaw(unique, start, end, true);
       if (raw == null || token !== this._recordsToken) return;
-      const next = this._ingestHistoryRaw(raw, keyById);
-      for (const [key, pts] of Object.entries(next)) {
-        next[key] = downsampleHistory(pts, 240);
+      const full = this._ingestHistoryRaw(raw, keyById);
+      // Extremes from the full series — never after uniform downsample.
+      this._recordsBook = buildRecordBook(full);
+      // Slim copy is only a fallback if the book is cleared; keep peaks (and temp troughs).
+      const slim: Record<string, HistoryPoint[]> = {};
+      for (const [key, pts] of Object.entries(full)) {
+        if (key === "temperature") {
+          const highs = downsampleHistoryExtrema(pts, 120, "max");
+          const lows = downsampleHistoryExtrema(pts, 120, "min");
+          const byTs = new Map<number, HistoryPoint>();
+          for (const p of [...highs, ...lows]) byTs.set(p.last_changed, p);
+          slim[key] = [...byTs.values()].sort((a, b) => a.last_changed - b.last_changed);
+        } else {
+          slim[key] = downsampleHistoryExtrema(pts, 240, "max");
+        }
       }
-      this._recordsHistory = next;
+      this._recordsHistory = slim;
       this._recordsFetchedAt = Date.now();
       this._renderSignature = null;
       this._render(true);
@@ -1003,7 +1023,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   }
 
   private _recordsHtml(ctx: RenderCtx): string {
-    const book = buildRecordBook(this._recordsHistory);
+    const book = this._recordsBook || buildRecordBook(this._recordsHistory);
     const period = this._config?.records_period === "year" ? "Year" : "Month";
     const target = this._config?.unit_system || "native";
     const tempSrc = this._conv(ctx.temp, "°F").src || "°F";
@@ -1050,9 +1070,12 @@ class MushroomWeatherStationCard extends HTMLElement {
     const rate = fmtRate(book.peakRainRate);
     const wet = fmtRain(book.wettestDay);
 
-    const setHot = isNearRecord(ctx.hi.raw ?? ctx.t.raw, book.hottest, 0.3);
-    const setCold = isNearRecord(ctx.lo.raw ?? ctx.t.raw, book.coldest, 0.3);
-    const setGust = isNearRecord(ctx.wg.raw ?? num(ctx.maxGust?.state), book.peakGust, 0.5);
+    // Badge only when the extreme itself landed on today's local calendar day.
+    const setHot = isRecordSetToday(book.hottest);
+    const setCold = isRecordSetToday(book.coldest);
+    const setGust = isRecordSetToday(book.peakGust);
+    const setRate = isRecordSetToday(book.peakRainRate);
+    const setWet = isRecordSetToday(book.wettestDay);
 
     const tile = (label: string, value: string, when: string, set: boolean) => `
       <div class="record-tile ${set ? "set" : ""}">
@@ -1070,8 +1093,8 @@ class MushroomWeatherStationCard extends HTMLElement {
       ${tile(`Hottest · ${period}`, hot.value, hot.when, setHot)}
       ${tile(`Coldest · ${period}`, cold.value, cold.when, setCold)}
       ${tile(`Peak gust · ${period}`, gust.value, gust.when, setGust)}
-      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, false)}
-      ${tile(`Wettest day · ${period}`, wet.value, wet.when, false)}
+      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, setRate)}
+      ${tile(`Wettest day · ${period}`, wet.value, wet.when, setWet)}
     </div>`;
   }
 

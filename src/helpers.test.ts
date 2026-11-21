@@ -13,8 +13,11 @@ import {
   daysSinceTimestamp,
   degToCardinal,
   displayThresholdValue,
+  downsampleHistory,
+  downsampleHistoryExtrema,
   esc,
   historyLineSpark,
+  isRecordSetToday,
   mergeThresholds,
   moonMeta,
   moveSection,
@@ -183,6 +186,16 @@ describe("0.8 helpers", () => {
     expect(book.hottest?.value).toBe(95);
     expect(book.coldest?.value).toBe(40);
     expect(book.peakGust?.value).toBe(22);
+    expect(isRecordSetToday(book.hottest, now)).toBe(true);
+    expect(isRecordSetToday({ value: 99, at: now - 2 * 86400000 }, now)).toBe(false);
+
+    // Uniform downsample can miss a mid-series spike; extrema mode keeps it.
+    const spikeSeries = Array.from({ length: 100 }, (_, i) => ({
+      state: i === 48 ? 9.5 : 0.1,
+      last_changed: now - (100 - i) * 60_000,
+    }));
+    expect(Math.max(...downsampleHistory(spikeSeries, 20).map((p) => p.state))).toBe(0.1);
+    expect(Math.max(...downsampleHistoryExtrema(spikeSeries, 20, "max").map((p) => p.state))).toBe(9.5);
 
     const bars = precipTimelineBars(
       [

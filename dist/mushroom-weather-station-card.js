@@ -613,6 +613,23 @@ function downsampleHistory(points, maxPoints = 36) {
   }
   return out;
 }
+function downsampleHistoryExtrema(points, maxPoints = 72, mode = "max") {
+  if (points.length <= maxPoints) return points;
+  const out = [];
+  const bucket = points.length / maxPoints;
+  for (let i = 0; i < maxPoints; i++) {
+    const start = Math.floor(i * bucket);
+    const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
+    let best = points[start];
+    for (let j = start + 1; j < end && j < points.length; j++) {
+      if (mode === "max" ? points[j].state > best.state : points[j].state < best.state) {
+        best = points[j];
+      }
+    }
+    out.push(best);
+  }
+  return out;
+}
 function historyExtreme(points, mode) {
   if (!points.length) return null;
   let best = points[0];
@@ -630,9 +647,13 @@ function buildRecordBook(history) {
     wettestDay: historyExtreme(history.rain_today || [], "max")
   };
 }
-function isNearRecord(current, record, epsilon = 0.15) {
-  if (current == null || !record) return false;
-  return Math.abs(current - record.value) <= epsilon;
+function sameLocalDay(a, b = Date.now()) {
+  const da = new Date(a);
+  const db = new Date(b);
+  return da.getFullYear() === db.getFullYear() && da.getMonth() === db.getMonth() && da.getDate() === db.getDate();
+}
+function isRecordSetToday(record, now = Date.now()) {
+  return !!record && Number.isFinite(record.at) && sameLocalDay(record.at, now);
 }
 function precipTimelineBars(points, hours, buckets = 24) {
   const end = Date.now();
@@ -1408,6 +1429,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
+    this._recordsBook = null;
     this._recordsToken = 0;
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
@@ -1484,6 +1506,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
+    this._recordsBook = null;
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
     this._renderSignature = null;
@@ -1988,7 +2011,11 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (raw == null || token !== this._historyToken) return;
       const next = this._ingestHistoryRaw(raw, keyById);
       for (const [key, pts] of Object.entries(next)) {
-        next[key] = downsampleHistory(pts, 72);
+        if (key === "rain_rate" || key === "wind_gust") {
+          next[key] = downsampleHistoryExtrema(pts, 96, "max");
+        } else {
+          next[key] = downsampleHistory(pts, 72);
+        }
       }
       this._history = next;
       this._historyFetchedAt = Date.now();
@@ -2021,11 +2048,21 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     try {
       const raw = await this._fetchHistoryRaw(unique, start, end, true);
       if (raw == null || token !== this._recordsToken) return;
-      const next = this._ingestHistoryRaw(raw, keyById);
-      for (const [key, pts] of Object.entries(next)) {
-        next[key] = downsampleHistory(pts, 240);
+      const full = this._ingestHistoryRaw(raw, keyById);
+      this._recordsBook = buildRecordBook(full);
+      const slim = {};
+      for (const [key, pts] of Object.entries(full)) {
+        if (key === "temperature") {
+          const highs = downsampleHistoryExtrema(pts, 120, "max");
+          const lows = downsampleHistoryExtrema(pts, 120, "min");
+          const byTs = /* @__PURE__ */ new Map();
+          for (const p of [...highs, ...lows]) byTs.set(p.last_changed, p);
+          slim[key] = [...byTs.values()].sort((a, b) => a.last_changed - b.last_changed);
+        } else {
+          slim[key] = downsampleHistoryExtrema(pts, 240, "max");
+        }
       }
-      this._recordsHistory = next;
+      this._recordsHistory = slim;
       this._recordsFetchedAt = Date.now();
       this._renderSignature = null;
       this._render(true);
@@ -2185,7 +2222,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     </div>`;
   }
   _recordsHtml(ctx) {
-    const book = buildRecordBook(this._recordsHistory);
+    const book = this._recordsBook || buildRecordBook(this._recordsHistory);
     const period = this._config?.records_period === "year" ? "Year" : "Month";
     const target = this._config?.unit_system || "native";
     const tempSrc = this._conv(ctx.temp, "°F").src || "°F";
@@ -2229,9 +2266,11 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const gust = fmtGust(book.peakGust);
     const rate = fmtRate(book.peakRainRate);
     const wet = fmtRain(book.wettestDay);
-    const setHot = isNearRecord(ctx.hi.raw ?? ctx.t.raw, book.hottest, 0.3);
-    const setCold = isNearRecord(ctx.lo.raw ?? ctx.t.raw, book.coldest, 0.3);
-    const setGust = isNearRecord(ctx.wg.raw ?? num(ctx.maxGust?.state), book.peakGust, 0.5);
+    const setHot = isRecordSetToday(book.hottest);
+    const setCold = isRecordSetToday(book.coldest);
+    const setGust = isRecordSetToday(book.peakGust);
+    const setRate = isRecordSetToday(book.peakRainRate);
+    const setWet = isRecordSetToday(book.wettestDay);
     const tile = (label, value, when, set) => `
       <div class="record-tile ${set ? "set" : ""}">
         <div class="record-label">${esc(label)}</div>
@@ -2246,8 +2285,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       ${tile(`Hottest · ${period}`, hot.value, hot.when, setHot)}
       ${tile(`Coldest · ${period}`, cold.value, cold.when, setCold)}
       ${tile(`Peak gust · ${period}`, gust.value, gust.when, setGust)}
-      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, false)}
-      ${tile(`Wettest day · ${period}`, wet.value, wet.when, false)}
+      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, setRate)}
+      ${tile(`Wettest day · ${period}`, wet.value, wet.when, setWet)}
     </div>`;
   }
   _comfortHtml() {
