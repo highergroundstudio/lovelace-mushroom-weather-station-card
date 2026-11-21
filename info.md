@@ -11,7 +11,9 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 - Layouts: `full`, `compact`, glance `chips` with expand
 - Custom section order (drag-and-drop in the editor)
 - Hourly + daily forecast with precip %
-- History sparklines and wind rose
+- History sparklines, wind rose, precip timeline
+- Record book (month/year extremes) and comfort zones
+- Seasonal skins by season + condition
 - Weather alerts banner
 - Soil moisture/temp 1–8, leaf wetness, AQI, VOC, noise
 - Sunrise / sunset / moon phase
@@ -21,7 +23,7 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 
 ## Confirm version
 
-Card editor banner should show **v0.7.0** after HACS update + hard refresh.
+Card editor banner should show **v0.8.0** after HACS update + hard refresh.
 
 ## Example
 
@@ -34,11 +36,16 @@ show_hourly_forecast: true
 show_history_sparklines: true
 show_wind_rose: true
 show_alerts: true
+show_precip_timeline: true
+show_records: true
+show_comfort: true
+seasonal_skins: true
 weather_entity: weather.home
 rain_month_normal: 2.5
 section_order:
   - conditions
   - rain
-  - wind
+  - records
+  - comfort
   - forecast
 ```

@@ -52,6 +52,8 @@ const DEFAULT_SECTION_ORDER = [
   "lightning",
   "air",
   "station",
+  "records",
+  "comfort",
   "forecast",
   "battery"
 ];
@@ -64,6 +66,8 @@ const SECTION_LABELS = {
   lightning: "Lightning",
   air: "Air quality",
   station: "Station",
+  records: "Record book",
+  comfort: "Comfort",
   forecast: "Forecast",
   battery: "Battery"
 };
@@ -188,7 +192,7 @@ function storeThresholdValue(value, kind, system) {
   if (system !== "metric") return value;
   return value * (9 / 5) + 32;
 }
-const CARD_VERSION$1 = "0.7.0";
+const CARD_VERSION$1 = "0.8.0";
 const CARD_VERSION = customElements.get(CARD_TYPE)?.VERSION || customElements.get(CARD_TYPE)?.constructor?.VERSION || CARD_VERSION$1;
 async function loadHaComponents() {
   if (customElements.get("ha-entity-picker")) return;
@@ -263,8 +267,13 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (section === "units") {
       if (value) next.units[key] = String(value);
       else delete next.units[key];
-    } else if (key === "show_empty" || key === "show_forecast" || key === "show_hourly_forecast" || key === "show_history_sparklines" || key === "show_wind_rose" || key === "show_alerts" || key === "tablet_mode" || key === "show_updated" || key === "show_beaufort" || String(key).startsWith("hide_")) {
+    } else if (key === "show_empty" || key === "show_forecast" || key === "show_hourly_forecast" || key === "show_history_sparklines" || key === "show_wind_rose" || key === "show_alerts" || key === "show_precip_timeline" || key === "show_records" || key === "show_comfort" || key === "seasonal_skins" || key === "tablet_mode" || key === "show_updated" || key === "show_beaufort" || String(key).startsWith("hide_")) {
       next[key] = !!value;
+    } else if (key === "comfort_temp_min" || key === "comfort_temp_max") {
+      const displayed = value === "" ? NaN : Number(value);
+      const system = this._unitSystem();
+      const stored = Number.isFinite(displayed) ? storeThresholdValue(displayed, "temp", system === "native" ? "imperial" : system) : NaN;
+      next[key] = Number.isFinite(stored) ? stored : value;
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...next.thresholds || {} };
       const system = this._unitSystem();
@@ -280,7 +289,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       }
       next.thresholds = thresholds;
       if (key === "uv_purple_above") next[key] = value;
-    } else if (key === "stale_minutes" || key === "forecast_days" || key === "hourly_forecast_hours" || key === "history_hours" || key === "battery_warning_threshold" || key === "rain_month_normal") {
+    } else if (key === "stale_minutes" || key === "forecast_days" || key === "hourly_forecast_hours" || key === "history_hours" || key === "battery_warning_threshold" || key === "rain_month_normal" || key === "comfort_humidity_min" || key === "comfort_humidity_max") {
       const n = value === "" ? void 0 : Number(value);
       next[key] = Number.isFinite(n) ? n : value;
     } else {
@@ -436,6 +445,20 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
             <input data-key="history_hours" type="number" min="6" max="48" value="${esc(c.history_hours ?? "24")}" placeholder="24" />
           </label>
         </div>
+        <div class="row">
+          <label class="field">Record book period
+            <select data-key="records_period">
+              <option value="month" ${!c.records_period || c.records_period === "month" ? "selected" : ""}>Month (30 days)</option>
+              <option value="year" ${c.records_period === "year" ? "selected" : ""}>Year (365 days)</option>
+            </select>
+          </label>
+          <label class="field">Hemisphere (seasonal skins)
+            <select data-key="hemisphere">
+              <option value="north" ${!c.hemisphere || c.hemisphere === "north" ? "selected" : ""}>Northern</option>
+              <option value="south" ${c.hemisphere === "south" ? "selected" : ""}>Southern</option>
+            </select>
+          </label>
+        </div>
         <label class="field">Rain month normal
           <input data-key="rain_month_normal" type="number" min="0" step="0.01" value="${esc(c.rain_month_normal ?? "")}" placeholder="e.g. 2.5" />
         </label>
@@ -448,6 +471,9 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         <div id="section-switches" class="switch-list"></div>
       `;
     } else if (tab === "display") {
+      const bandSystem = system === "native" ? "imperial" : system;
+      const comfortLo = displayThresholdValue(Number(c.comfort_temp_min ?? 65), "temp", bandSystem);
+      const comfortHi = displayThresholdValue(Number(c.comfort_temp_max ?? 78), "temp", bandSystem);
       body.innerHTML = `
         <div class="row">
           <label class="field">Battery warning threshold
@@ -460,6 +486,24 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         <label class="field">Temperature blue at / below (${esc(tempUnit)})
           <input data-key="temp_blue_below" type="number" value="${esc(Number(displayTempBlue.toFixed(1)))}" placeholder="${tempUnit === "°C" ? "0" : "32"}" />
         </label>
+        <h3>Comfort band</h3>
+        <p class="help">Outdoor comfort hours use this temp×humidity window. Temperatures follow the selected unit system; humidity is %RH.</p>
+        <div class="row">
+          <label class="field">Comfort temp min (${esc(tempUnit)})
+            <input data-key="comfort_temp_min" type="number" value="${esc(Number(comfortLo.toFixed(1)))}" />
+          </label>
+          <label class="field">Comfort temp max (${esc(tempUnit)})
+            <input data-key="comfort_temp_max" type="number" value="${esc(Number(comfortHi.toFixed(1)))}" />
+          </label>
+        </div>
+        <div class="row">
+          <label class="field">Comfort humidity min (%)
+            <input data-key="comfort_humidity_min" type="number" min="0" max="100" value="${esc(c.comfort_humidity_min ?? "30")}" />
+          </label>
+          <label class="field">Comfort humidity max (%)
+            <input data-key="comfort_humidity_max" type="number" min="0" max="100" value="${esc(c.comfort_humidity_max ?? "60")}" />
+          </label>
+        </div>
         <p class="help">Threshold cutoffs follow the selected unit system (${esc(system)}). Stored rules stay compatible with imperial defaults. Per-slot labels and units are under Entities.</p>
       `;
     } else if (tab === "order") {
@@ -536,18 +580,24 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         { key: "show_history_sparklines", title: "History sparklines", help: "Mini charts on temp, humidity, wind, pressure." },
         { key: "show_wind_rose", title: "Wind rose", help: "Direction distribution from history." },
         { key: "show_alerts", title: "Weather alerts banner", help: "From weather attributes or alert entity." },
+        { key: "show_precip_timeline", title: "Precipitation timeline", help: "Hourly rain-rate intensity bars in the rain section." },
+        { key: "show_records", title: "Record book", help: "Month/year extremes from HA history." },
+        { key: "show_comfort", title: "Comfort zones", help: "Hours in temp×humidity comfort band + scatter." },
+        { key: "seasonal_skins", title: "Seasonal skins", help: "Accent the card by season and weather condition." },
         { key: "show_updated", title: "Show last updated", help: "Status chip with relative update time." },
         { key: "show_beaufort", title: "Show Beaufort scale", help: "Add Beaufort number on the wind speed tile." }
       ]);
       this._fillSwitches("section-switches", [
         { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
         { key: "hide_wind", title: "Hide wind", help: "Compass, rose, speed, gust, max gust" },
-        { key: "hide_rain", title: "Hide rain", help: "Goals, sparkline, and rain totals" },
+        { key: "hide_rain", title: "Hide rain", help: "Goals, timeline, sparkline, and rain totals" },
         { key: "hide_sun", title: "Hide sun & moon", help: "UV, solar, light, sunrise/sunset, moon" },
         { key: "hide_soil", title: "Hide soil", help: "Moisture/temp channels 1–8 and leaf wetness" },
         { key: "hide_lightning", title: "Hide lightning", help: "Strike count, distance, last strike" },
         { key: "hide_air", title: "Hide air quality", help: "PM2.5, AQI, VOC, noise" },
         { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
+        { key: "hide_records", title: "Hide record book", help: "Month/year extremes grid" },
+        { key: "hide_comfort", title: "Hide comfort zones", help: "Comfort hours and scatter" },
         { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" }
       ]);
     }
@@ -638,7 +688,11 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         "show_updated",
         "show_history_sparklines",
         "show_wind_rose",
-        "show_alerts"
+        "show_alerts",
+        "show_precip_timeline",
+        "show_records",
+        "show_comfort",
+        "seasonal_skins"
       ]);
       if (item.key === "show_hourly_forecast") {
         const raw = this._config.show_hourly_forecast;

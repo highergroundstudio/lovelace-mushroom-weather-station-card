@@ -65,6 +65,8 @@ export const DEFAULT_SECTION_ORDER: SectionId[] = [
   "lightning",
   "air",
   "station",
+  "records",
+  "comfort",
   "forecast",
   "battery",
 ];
@@ -78,9 +80,19 @@ export const SECTION_LABELS: Record<SectionId, string> = {
   lightning: "Lightning",
   air: "Air quality",
   station: "Station",
+  records: "Record book",
+  comfort: "Comfort",
   forecast: "Forecast",
   battery: "Battery",
 };
+
+/** Default outdoor comfort band in imperial units (°F / %RH). */
+export const DEFAULT_COMFORT = {
+  tempMin: 65,
+  tempMax: 78,
+  humidityMin: 30,
+  humidityMax: 60,
+} as const;
 
 export const DEFAULT_THRESHOLDS: Record<string, ThresholdRule[]> = {
   temperature: [

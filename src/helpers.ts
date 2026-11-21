@@ -2,6 +2,7 @@ import {
   ALERT_SEVERITY_COLOR,
   CARDINALS,
   COLOR_VARS,
+  DEFAULT_COMFORT,
   DEFAULT_SECTION_ORDER,
   DEFAULT_THRESHOLDS,
   MOON_ICONS,
@@ -10,9 +11,15 @@ import {
 } from "./const";
 import type {
   CardConfig,
+  ComfortStats,
   HassEntity,
+  Hemisphere,
+  HistoryExtreme,
   HistoryPoint,
   HomeAssistant,
+  PrecipBar,
+  RecordBook,
+  Season,
   SectionId,
   ThresholdRule,
   UnitSystem,
@@ -507,4 +514,206 @@ export function downsampleHistory(points: HistoryPoint[], maxPoints = 36): Histo
     out.push(points[Math.round(i * step)]);
   }
   return out;
+}
+
+export function historyExtreme(
+  points: HistoryPoint[],
+  mode: "min" | "max",
+): HistoryExtreme | null {
+  if (!points.length) return null;
+  let best = points[0];
+  for (const p of points) {
+    if (mode === "max" ? p.state > best.state : p.state < best.state) best = p;
+  }
+  return { value: best.state, at: best.last_changed };
+}
+
+export function buildRecordBook(history: Record<string, HistoryPoint[]>): RecordBook {
+  return {
+    hottest: historyExtreme(history.temperature || [], "max"),
+    coldest: historyExtreme(history.temperature || [], "min"),
+    peakGust: historyExtreme(history.wind_gust || [], "max"),
+    peakRainRate: historyExtreme(history.rain_rate || [], "max"),
+    wettestDay: historyExtreme(history.rain_today || [], "max"),
+  };
+}
+
+export function isNearRecord(current: number | null, record: HistoryExtreme | null, epsilon = 0.15): boolean {
+  if (current == null || !record) return false;
+  return Math.abs(current - record.value) <= epsilon;
+}
+
+export function precipTimelineBars(points: HistoryPoint[], hours: number, buckets = 24): PrecipBar[] {
+  const end = Date.now();
+  const start = end - hours * 3600 * 1000;
+  const span = Math.max(1, end - start);
+  const width = Math.min(48, Math.max(8, buckets));
+  const bars: PrecipBar[] = Array.from({ length: width }, (_, i) => {
+    const t0 = start + (i / width) * span;
+    const when = new Date(t0 + span / width / 2);
+    let label = "";
+    try {
+      label = when.toLocaleTimeString(undefined, { hour: "numeric" });
+    } catch {
+      label = `${when.getHours()}`;
+    }
+    return { label, value: 0, start: t0 };
+  });
+  for (const p of points) {
+    if (!Number.isFinite(p.state) || p.last_changed < start) continue;
+    const idx = Math.min(width - 1, Math.max(0, Math.floor(((p.last_changed - start) / span) * width)));
+    bars[idx].value = Math.max(bars[idx].value, p.state);
+  }
+  return bars;
+}
+
+export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): string {
+  if (!bars.length) return "";
+  const max = Math.max(...bars.map((b) => b.value), 0.01);
+  const gap = 2;
+  const barW = Math.max(2, (width - gap * (bars.length - 1)) / bars.length);
+  const rects = bars
+    .map((b, i) => {
+      const h = Math.max(b.value > 0 ? 3 : 1, (b.value / max) * (height - 8));
+      const x = i * (barW + gap);
+      const y = height - h;
+      const opacity = b.value > 0 ? 0.55 + (b.value / max) * 0.45 : 0.18;
+      return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="currentColor" opacity="${opacity.toFixed(2)}"/>`;
+    })
+    .join("");
+  return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
+}
+
+function nearestHumidity(at: number, humidity: HistoryPoint[]): number | null {
+  if (!humidity.length) return null;
+  let best = humidity[0];
+  let bestDist = Math.abs(best.last_changed - at);
+  for (const p of humidity) {
+    const d = Math.abs(p.last_changed - at);
+    if (d < bestDist) {
+      best = p;
+      bestDist = d;
+    }
+  }
+  // Ignore humidity samples more than 45 minutes from the temp sample.
+  return bestDist <= 45 * 60 * 1000 ? best.state : null;
+}
+
+export function comfortBandFromConfig(config: CardConfig | undefined): {
+  tempMin: number;
+  tempMax: number;
+  humidityMin: number;
+  humidityMax: number;
+} {
+  const tempMin = num(config?.comfort_temp_min);
+  const tempMax = num(config?.comfort_temp_max);
+  const humidityMin = num(config?.comfort_humidity_min);
+  const humidityMax = num(config?.comfort_humidity_max);
+  return {
+    tempMin: tempMin ?? DEFAULT_COMFORT.tempMin,
+    tempMax: tempMax ?? DEFAULT_COMFORT.tempMax,
+    humidityMin: humidityMin ?? DEFAULT_COMFORT.humidityMin,
+    humidityMax: humidityMax ?? DEFAULT_COMFORT.humidityMax,
+  };
+}
+
+export function comfortStats(
+  tempPoints: HistoryPoint[],
+  humidityPoints: HistoryPoint[],
+  band: { tempMin: number; tempMax: number; humidityMin: number; humidityMax: number },
+): ComfortStats {
+  const samples: Array<{ temp: number; humidity: number }> = [];
+  let hoursIn = 0;
+  let hoursTotal = 0;
+  // Approximate dwell time from consecutive samples (capped at 30 minutes each).
+  for (let i = 0; i < tempPoints.length; i++) {
+    const t = tempPoints[i];
+    const h = nearestHumidity(t.last_changed, humidityPoints);
+    if (h == null) continue;
+    samples.push({ temp: t.state, humidity: h });
+    const next = tempPoints[i + 1];
+    const dtHr = next
+      ? Math.min(0.5, Math.max(0, (next.last_changed - t.last_changed) / 3600000))
+      : 0.25;
+    hoursTotal += dtHr;
+    const ok =
+      t.state >= band.tempMin
+      && t.state <= band.tempMax
+      && h >= band.humidityMin
+      && h <= band.humidityMax;
+    if (ok) hoursIn += dtHr;
+  }
+  const pct = hoursTotal > 0 ? Math.round((hoursIn / hoursTotal) * 100) : null;
+  return { hoursIn, hoursTotal, pct, samples };
+}
+
+export function comfortScatterSvg(
+  samples: Array<{ temp: number; humidity: number }>,
+  band: { tempMin: number; tempMax: number; humidityMin: number; humidityMax: number },
+  width = 220,
+  height = 96,
+): string {
+  if (!samples.length) return "";
+  const temps = samples.map((s) => s.temp);
+  const hums = samples.map((s) => s.humidity);
+  const minT = Math.min(...temps, band.tempMin) - 2;
+  const maxT = Math.max(...temps, band.tempMax) + 2;
+  const minH = Math.min(...hums, band.humidityMin) - 5;
+  const maxH = Math.max(...hums, band.humidityMax) + 5;
+  const pad = 8;
+  const x = (t: number) => pad + ((t - minT) / Math.max(0.01, maxT - minT)) * (width - pad * 2);
+  const y = (h: number) => height - pad - ((h - minH) / Math.max(0.01, maxH - minH)) * (height - pad * 2);
+  const zoneX = x(band.tempMin);
+  const zoneY = y(band.humidityMax);
+  const zoneW = Math.max(4, x(band.tempMax) - zoneX);
+  const zoneH = Math.max(4, y(band.humidityMin) - zoneY);
+  const dots = samples
+    .slice(-80)
+    .map((s) => {
+      const inBand =
+        s.temp >= band.tempMin
+        && s.temp <= band.tempMax
+        && s.humidity >= band.humidityMin
+        && s.humidity <= band.humidityMax;
+      return `<circle cx="${x(s.temp).toFixed(1)}" cy="${y(s.humidity).toFixed(1)}" r="2.2" fill="currentColor" opacity="${inBand ? 0.9 : 0.35}"/>`;
+    })
+    .join("");
+  return `<svg class="comfort-scatter" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" aria-hidden="true">
+    <rect x="${zoneX.toFixed(1)}" y="${zoneY.toFixed(1)}" width="${zoneW.toFixed(1)}" height="${zoneH.toFixed(1)}" fill="currentColor" opacity="0.12" rx="4"/>
+    ${dots}
+  </svg>`;
+}
+
+/** Meteorological seasons (Mar–May spring in the northern hemisphere). */
+export function currentSeason(date = new Date(), hemisphere: Hemisphere = "north"): Season {
+  const m = date.getMonth();
+  let season: Season;
+  if (m >= 2 && m <= 4) season = "spring";
+  else if (m >= 5 && m <= 7) season = "summer";
+  else if (m >= 8 && m <= 10) season = "autumn";
+  else season = "winter";
+  if (hemisphere === "south") {
+    const flip: Record<Season, Season> = {
+      spring: "autumn",
+      summer: "winter",
+      autumn: "spring",
+      winter: "summer",
+    };
+    return flip[season];
+  }
+  return season;
+}
+
+export function seasonalSkinClasses(
+  season: Season,
+  condition?: string | null,
+): string {
+  const cond = String(condition || "").toLowerCase();
+  let condClass = "";
+  if (cond.includes("snow")) condClass = "cond-snow";
+  else if (cond.includes("lightning") || cond.includes("thunder")) condClass = "cond-storm";
+  else if (cond.includes("rain") || cond.includes("pour") || cond.includes("hail")) condClass = "cond-rain";
+  else if (cond === "sunny" || cond === "clear-night" || cond.includes("clear")) condClass = "cond-clear";
+  else if (cond.includes("cloud") || cond.includes("fog")) condClass = "cond-cloud";
+  return `skin-${season}${condClass ? ` ${condClass}` : ""}`;
 }

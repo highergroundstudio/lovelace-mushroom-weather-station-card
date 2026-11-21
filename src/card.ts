@@ -19,9 +19,14 @@ import {
   available,
   batteryInfo,
   beaufort,
+  buildRecordBook,
   collectAlerts,
   colorFromThresholds,
+  comfortBandFromConfig,
+  comfortScatterSvg,
+  comfortStats,
   convertValue,
+  currentSeason,
   daysSinceTimestamp,
   downsampleHistory,
   entityAgeMs,
@@ -32,15 +37,19 @@ import {
   formatSunTime,
   historyLineSpark,
   iconColorVar,
+  isNearRecord,
   mergeThresholds,
   moonMeta,
   normalizeSectionOrder,
   num,
   parseWindDirection,
   pm25Meta,
+  precipTimelineBars,
+  precipTimelineSvg,
   pressureTrendMeta,
   rainMonthProgress,
   relativeTime,
+  seasonalSkinClasses,
   thresholdCompareValue,
   unitOf,
   uvMeta,
@@ -90,6 +99,10 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _historyToken = 0;
   private _historyFetchedAt = 0;
   private _historyPending = false;
+  private _recordsHistory: Record<string, HistoryPoint[]> = {};
+  private _recordsToken = 0;
+  private _recordsFetchedAt = 0;
+  private _recordsPending = false;
   private _forecastPending = false;
   private _forecastReadyKey: string | null = null;
   /** When set, setup failed because the weather entity was absent; retry after `_forecastRetryAt`. */
@@ -136,11 +149,17 @@ class MushroomWeatherStationCard extends HTMLElement {
       show_history_sparklines: true,
       show_wind_rose: true,
       show_alerts: true,
+      show_precip_timeline: true,
+      show_records: true,
+      show_comfort: true,
+      seasonal_skins: true,
       // Hourly follows weather_entity when unset (see _wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
       hourly_forecast_hours: 24,
       history_hours: 24,
+      records_period: "month",
+      hemisphere: "north",
       show_beaufort: false,
       sun_entity: "sun.sun",
       ...config,
@@ -150,6 +169,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._teardownForecast(true);
     this._forecastToken++;
     this._historyToken++;
+    this._recordsToken++;
     // Drop cached forecasts when the weather entity changes so old readings cannot stick.
     if (prevWeather !== nextWeather) {
       this._forecastDays = [];
@@ -159,9 +179,13 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._history = {};
     this._historyFetchedAt = 0;
     this._historyPending = false;
+    this._recordsHistory = {};
+    this._recordsFetchedAt = 0;
+    this._recordsPending = false;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
+    void this._ensureRecordsHistory();
     this._render(true);
   }
 
@@ -169,6 +193,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._hass = hass;
     void this._ensureForecastSub();
     void this._ensureHistory();
+    void this._ensureRecordsHistory();
     this._render(false);
   }
 
@@ -179,7 +204,9 @@ class MushroomWeatherStationCard extends HTMLElement {
   disconnectedCallback(): void {
     this._forecastToken++;
     this._historyToken++;
+    this._recordsToken++;
     this._historyPending = false;
+    this._recordsPending = false;
     this._teardownForecast(true);
     if (this._staleTimer) {
       window.clearInterval(this._staleTimer);
@@ -270,7 +297,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       return `${id}:${st.state}:${st.last_updated || ""}`;
     });
     parts.push(
-      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}`,
+      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.show_precip_timeline}|${this._config?.show_records}|${this._config?.show_comfort}|${this._config?.seasonal_skins}|${this._config?.records_period}|${this._config?.hemisphere}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}|hist:${this._historyFetchedAt}|rec:${this._recordsFetchedAt}`,
     );
     parts.push(`fc:${(this._forecastDays || []).length}:${(this._forecastHours || []).length}:${this._forecastError || ""}`);
     parts.push(`hist:${Object.keys(this._history).map((k) => `${k}:${this._history[k]?.length || 0}`).join(",")}`);
@@ -605,11 +632,103 @@ class MushroomWeatherStationCard extends HTMLElement {
     return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
   }
 
+  private _wantPrecipTimeline(): boolean {
+    return this._config?.show_precip_timeline !== false && !this._config?.hide_rain;
+  }
+
+  private _wantComfort(): boolean {
+    return this._config?.show_comfort !== false && !this._config?.hide_comfort;
+  }
+
+  private _wantRecords(): boolean {
+    return this._config?.show_records !== false && !this._config?.hide_records;
+  }
+
+  private _recordsDays(): number {
+    return this._config?.records_period === "year" ? 365 : 30;
+  }
+
+  private _parseHistoryPoint(rawState: unknown, changed: unknown): HistoryPoint | null {
+    let state = num(rawState);
+    if (state == null && typeof rawState === "string") {
+      const parsed = parseWindDirection({
+        entity_id: "",
+        state: rawState,
+        attributes: {},
+      });
+      state = parsed.deg;
+    }
+    const t = typeof changed === "number"
+      ? (changed > 1e12 ? changed : changed * 1000)
+      : changed
+        ? new Date(String(changed)).getTime()
+        : NaN;
+    return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
+  }
+
+  private _ingestHistoryRaw(
+    raw: unknown,
+    keyById: Record<string, string>,
+  ): Record<string, HistoryPoint[]> {
+    const next: Record<string, HistoryPoint[]> = {};
+    const asRecord = raw as Record<string, Array<{ s?: string; state?: string; lu?: number; last_changed?: string }>> | Array<Array<{ entity_id?: string; state?: string; last_changed?: string }>>;
+    if (Array.isArray(asRecord)) {
+      for (const series of asRecord) {
+        if (!Array.isArray(series) || !series.length) continue;
+        const id = series[0]?.entity_id || "";
+        const key = keyById[id];
+        if (!key) continue;
+        next[key] = series
+          .map((p) => this._parseHistoryPoint(p.state, p.last_changed))
+          .filter((p): p is HistoryPoint => !!p);
+      }
+    } else if (asRecord && typeof asRecord === "object") {
+      for (const [id, series] of Object.entries(asRecord)) {
+        const key = keyById[id];
+        if (!key || !Array.isArray(series)) continue;
+        next[key] = series
+          .map((p) => this._parseHistoryPoint(p.s ?? p.state, p.lu ?? p.last_changed))
+          .filter((p): p is HistoryPoint => !!p);
+      }
+    }
+    return next;
+  }
+
+  private async _fetchHistoryRaw(
+    entityIds: string[],
+    start: Date,
+    end: Date,
+    significantOnly: boolean,
+  ): Promise<unknown | null> {
+    if (!this._hass) return null;
+    if (this._hass.connection?.sendMessagePromise) {
+      return this._hass.connection.sendMessagePromise({
+        type: "history/history_during_period",
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        significant_changes_only: significantOnly,
+        minimal_response: true,
+        no_attributes: true,
+        entity_ids: entityIds,
+      });
+    }
+    if (this._hass.callApi) {
+      const sig = significantOnly ? 1 : 0;
+      return this._hass.callApi(
+        "GET",
+        `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&significant_changes_only=${sig}&minimal_response`,
+      );
+    }
+    return null;
+  }
+
   private async _ensureHistory(): Promise<void> {
     if (!this._hass || !this._config) return;
     const needSparks = this._config.show_history_sparklines !== false;
     const needRose = this._config.show_wind_rose !== false;
-    if (!needSparks && !needRose) return;
+    const needPrecip = this._wantPrecipTimeline();
+    const needComfort = this._wantComfort();
+    if (!needSparks && !needRose && !needPrecip && !needComfort) return;
     // Honor cache even for empty results; skip while a request is in flight.
     if (this._historyPending) return;
     if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1000) return;
@@ -620,21 +739,21 @@ class MushroomWeatherStationCard extends HTMLElement {
     const entityIds: string[] = [];
     const keyById: Record<string, string> = {};
 
+    const addKey = (key: string) => {
+      const id = this._config?.entities?.[key];
+      if (!id) return;
+      entityIds.push(id);
+      keyById[id] = key;
+    };
+
     if (needSparks) {
-      for (const key of HISTORY_SPARK_KEYS) {
-        const id = this._config.entities?.[key];
-        if (id) {
-          entityIds.push(id);
-          keyById[id] = key;
-        }
-      }
+      for (const key of HISTORY_SPARK_KEYS) addKey(key);
     }
-    if (needRose) {
-      const dirId = this._config.entities?.wind_direction;
-      if (dirId) {
-        entityIds.push(dirId);
-        keyById[dirId] = "wind_direction";
-      }
+    if (needRose) addKey("wind_direction");
+    if (needPrecip) addKey("rain_rate");
+    if (needComfort) {
+      addKey("temperature");
+      addKey("humidity");
     }
     const unique = [...new Set(entityIds)];
     // No mapped entities — do not latch pending (there is no try/finally below).
@@ -644,66 +763,12 @@ class MushroomWeatherStationCard extends HTMLElement {
     const token = ++this._historyToken;
 
     try {
-      let raw: unknown;
-      if (this._hass.connection?.sendMessagePromise) {
-        raw = await this._hass.connection.sendMessagePromise({
-          type: "history/history_during_period",
-          start_time: start.toISOString(),
-          end_time: end.toISOString(),
-          significant_changes_only: false,
-          minimal_response: true,
-          no_attributes: true,
-          entity_ids: unique,
-        });
-      } else if (this._hass.callApi) {
-        raw = await this._hass.callApi(
-          "GET",
-          `history/period/${start.toISOString()}?filter_entity_id=${unique.join(",")}&significant_changes_only=0&minimal_response`,
-        );
-      } else {
-        return;
-      }
-      if (token !== this._historyToken) return;
+      const raw = await this._fetchHistoryRaw(unique, start, end, false);
+      if (raw == null || token !== this._historyToken) return;
 
-      const next: Record<string, HistoryPoint[]> = {};
-      const asRecord = raw as Record<string, Array<{ s?: string; state?: string; lu?: number; last_changed?: string }>> | Array<Array<{ entity_id?: string; state?: string; last_changed?: string }>>;
-
-      const parsePoint = (rawState: unknown, changed: unknown): HistoryPoint | null => {
-        let state = num(rawState);
-        if (state == null && typeof rawState === "string") {
-          const parsed = parseWindDirection({
-            entity_id: "",
-            state: rawState,
-            attributes: {},
-          });
-          state = parsed.deg;
-        }
-        const t = typeof changed === "number"
-          ? (changed > 1e12 ? changed : changed * 1000)
-          : changed
-            ? new Date(String(changed)).getTime()
-            : NaN;
-        return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
-      };
-
-      if (Array.isArray(asRecord)) {
-        for (const series of asRecord) {
-          if (!Array.isArray(series) || !series.length) continue;
-          const id = series[0]?.entity_id || "";
-          const key = keyById[id];
-          if (!key) continue;
-          next[key] = series
-            .map((p) => parsePoint(p.state, p.last_changed))
-            .filter((p): p is HistoryPoint => !!p);
-        }
-      } else if (asRecord && typeof asRecord === "object") {
-        for (const [id, series] of Object.entries(asRecord)) {
-          const key = keyById[id];
-          if (!key || !Array.isArray(series)) continue;
-          next[key] = series
-            .map((p) => parsePoint(p.s ?? p.state, p.lu ?? p.last_changed))
-            .filter((p): p is HistoryPoint => !!p);
-        }
+      const next = this._ingestHistoryRaw(raw, keyById);
+      for (const [key, pts] of Object.entries(next)) {
+        next[key] = downsampleHistory(pts, 72);
       }
 
       this._history = next;
@@ -715,6 +780,45 @@ class MushroomWeatherStationCard extends HTMLElement {
       if (token === this._historyToken) this._historyFetchedAt = Date.now();
     } finally {
       if (token === this._historyToken) this._historyPending = false;
+    }
+  }
+
+  private async _ensureRecordsHistory(): Promise<void> {
+    if (!this._hass || !this._config || !this._wantRecords()) return;
+    if (this._recordsPending) return;
+    if (this._recordsFetchedAt && Date.now() - this._recordsFetchedAt < 15 * 60 * 1000) return;
+
+    const end = new Date();
+    const start = new Date(end.getTime() - this._recordsDays() * 86400000);
+    const entityIds: string[] = [];
+    const keyById: Record<string, string> = {};
+    for (const key of ["temperature", "wind_gust", "rain_rate", "rain_today"] as const) {
+      const id = this._config.entities?.[key];
+      if (!id) continue;
+      entityIds.push(id);
+      keyById[id] = key;
+    }
+    const unique = [...new Set(entityIds)];
+    if (!unique.length) return;
+
+    this._recordsPending = true;
+    const token = ++this._recordsToken;
+    try {
+      // Significant-only keeps month/year payloads manageable.
+      const raw = await this._fetchHistoryRaw(unique, start, end, true);
+      if (raw == null || token !== this._recordsToken) return;
+      const next = this._ingestHistoryRaw(raw, keyById);
+      for (const [key, pts] of Object.entries(next)) {
+        next[key] = downsampleHistory(pts, 240);
+      }
+      this._recordsHistory = next;
+      this._recordsFetchedAt = Date.now();
+      this._renderSignature = null;
+      this._render(true);
+    } catch {
+      if (token === this._recordsToken) this._recordsFetchedAt = Date.now();
+    } finally {
+      if (token === this._recordsToken) this._recordsPending = false;
     }
   }
 
@@ -881,6 +985,126 @@ class MushroomWeatherStationCard extends HTMLElement {
     return `${hourly}${daily}`;
   }
 
+  private _precipTimelineHtml(): string {
+    if (!this._wantPrecipTimeline()) return "";
+    const pts = this._history.rain_rate || [];
+    if (!pts.length) return "";
+    const hours = this._historyHours();
+    const bars = precipTimelineBars(pts, hours, Math.min(36, Math.max(12, hours)));
+    const peak = Math.max(...bars.map((b) => b.value), 0);
+    const peakFmt = peak > 0 ? fmtNum(peak, 2) : "0";
+    return `<div class="precip-timeline" data-key="rain_rate" data-entity="${esc(this._config?.entities?.rain_rate || "")}">
+      <div class="precip-timeline-top">
+        <span>Precipitation timeline</span>
+        <span class="precip-timeline-meta">${hours}h · peak ${esc(peakFmt)}</span>
+      </div>
+      ${precipTimelineSvg(bars)}
+    </div>`;
+  }
+
+  private _recordsHtml(ctx: RenderCtx): string {
+    const book = buildRecordBook(this._recordsHistory);
+    const period = this._config?.records_period === "year" ? "Year" : "Month";
+    const target = this._config?.unit_system || "native";
+    const tempSrc = this._conv(ctx.temp, "°F").src || "°F";
+    const gustSrc = this._conv(ctx.gust || ctx.maxGust, "mph").src || "mph";
+    const rateSrc = this._conv(ctx.rate, "in/h").src || "in/h";
+    const rainSrc = this._conv(ctx.today, "in").src || "in";
+
+    const fmtTemp = (ex: { value: number; at: number } | null) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, tempSrc, target);
+      return {
+        value: `${c.value == null ? "—" : Math.round(c.value)}°`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language),
+      };
+    };
+    const fmtGust = (ex: { value: number; at: number } | null) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, gustSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 1)} ${esc(c.unit || "mph")}`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language),
+      };
+    };
+    const fmtRate = (ex: { value: number; at: number } | null) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, rateSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "")}`.trim(),
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language),
+      };
+    };
+    const fmtRain = (ex: { value: number; at: number } | null) => {
+      if (!ex) return { value: "—", when: "" };
+      const c = convertValue(ex.value, rainSrc, target);
+      return {
+        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "in")}`,
+        when: relativeTime(new Date(ex.at), this._hass?.locale?.language),
+      };
+    };
+
+    const hot = fmtTemp(book.hottest);
+    const cold = fmtTemp(book.coldest);
+    const gust = fmtGust(book.peakGust);
+    const rate = fmtRate(book.peakRainRate);
+    const wet = fmtRain(book.wettestDay);
+
+    const setHot = isNearRecord(ctx.hi.raw ?? ctx.t.raw, book.hottest, 0.3);
+    const setCold = isNearRecord(ctx.lo.raw ?? ctx.t.raw, book.coldest, 0.3);
+    const setGust = isNearRecord(ctx.wg.raw ?? num(ctx.maxGust?.state), book.peakGust, 0.5);
+
+    const tile = (label: string, value: string, when: string, set: boolean) => `
+      <div class="record-tile ${set ? "set" : ""}">
+        <div class="record-label">${esc(label)}</div>
+        <div class="record-value">${value}</div>
+        ${when ? `<div class="record-when">${esc(when)}</div>` : ""}
+        ${set ? `<span class="record-badge">Set today</span>` : ""}
+      </div>`;
+
+    if (!book.hottest && !book.coldest && !book.peakGust && !book.peakRainRate && !book.wettestDay) {
+      return `<div class="hint">Record book needs history for temperature, gust, or rain sensors (${period.toLowerCase()} window).</div>`;
+    }
+
+    return `<div class="records-grid" title="${esc(period)} extremes">
+      ${tile(`Hottest · ${period}`, hot.value, hot.when, setHot)}
+      ${tile(`Coldest · ${period}`, cold.value, cold.when, setCold)}
+      ${tile(`Peak gust · ${period}`, gust.value, gust.when, setGust)}
+      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, false)}
+      ${tile(`Wettest day · ${period}`, wet.value, wet.when, false)}
+    </div>`;
+  }
+
+  private _comfortHtml(): string {
+    const band = comfortBandFromConfig(this._config);
+    // History values are in the sensor's native units; compare in °F via threshold helper path.
+    const tempPts = (this._history.temperature || []).map((p) => {
+      const src = this._conv(this._st("temperature"), "°F").src || "°F";
+      const cmp = thresholdCompareValue(p.state, src);
+      return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
+    }).filter((p): p is HistoryPoint => !!p);
+    const humPts = this._history.humidity || [];
+    const stats = comfortStats(tempPts, humPts, band);
+    if (!stats.samples.length) {
+      return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
+    }
+    const target = this._config?.unit_system || "native";
+    const lo = convertValue(band.tempMin, "°F", target);
+    const hi = convertValue(band.tempMax, "°F", target);
+    const bandLabel = `${lo.value == null ? "—" : Math.round(lo.value)}–${hi.value == null ? "—" : Math.round(hi.value)}${lo.unit || "°"} · ${band.humidityMin}–${band.humidityMax}% RH`;
+    const pct = stats.pct == null ? "—" : `${stats.pct}%`;
+    return `<div class="comfort-panel">
+      <div class="comfort-top">
+        <div class="comfort-title">Hours in comfort</div>
+        <div class="comfort-pct">${esc(pct)}</div>
+      </div>
+      <div class="comfort-track"><div class="comfort-fill" style="width:${stats.pct == null ? 0 : Math.min(100, stats.pct)}%"></div></div>
+      <div class="comfort-meta">${fmtNum(stats.hoursIn, 1)}h of ${fmtNum(stats.hoursTotal, 1)}h in band · ${esc(bandLabel)}</div>
+      ${comfortScatterSvg(stats.samples, band)}
+      <div class="comfort-axes"><span>Cooler</span><span>Temp →</span><span>Warmer</span></div>
+    </div>`;
+  }
+
   private _soilTiles(): string {
     const parts: string[] = [];
     for (let i = 1; i <= 8; i++) {
@@ -978,6 +1202,7 @@ class MushroomWeatherStationCard extends HTMLElement {
             : "";
         const body = `
           ${goal}
+          ${this._precipTimelineHtml()}
           ${this._sparkline([
             { label: "T", value: num(ctx.today?.state) },
             { label: "E", value: num(ctx.event?.state) },
@@ -1041,6 +1266,14 @@ class MushroomWeatherStationCard extends HTMLElement {
           ${this._tile("co2", this._label("co2", "CO₂"), ctx.co2, num(ctx.co2?.state) == null ? "—" : `${fmtNum(num(ctx.co2?.state), 0)} ${esc(this._unitStr("co2", ctx.co2, "ppm"))}`, "mdi:molecule-co2", this._color("co2", num(ctx.co2?.state), "green"))}
         </div>`;
         return this._wrapSection(id, compact, body);
+      }
+      case "records": {
+        if (!this._wantRecords()) return "";
+        return this._wrapSection(id, compact, this._recordsHtml(ctx));
+      }
+      case "comfort": {
+        if (!this._wantComfort()) return "";
+        return this._wrapSection(id, compact, this._comfortHtml());
       }
       case "forecast": {
         const showDaily = !!this._config?.show_forecast;
@@ -1233,9 +1466,17 @@ class MushroomWeatherStationCard extends HTMLElement {
       ? order.map((sid) => this._renderSection(sid, ctx)).join("")
       : "";
 
+    const weatherSt = entityState(this._hass, this._config.weather_entity);
+    const skinOn = this._config.seasonal_skins !== false;
+    const season = currentSeason(new Date(), this._config.hemisphere === "south" ? "south" : "north");
+    const skinClass = skinOn
+      ? seasonalSkinClasses(season, weatherSt?.state || (raining ? "rainy" : null))
+      : "";
+    const layoutClass = compact ? "compact" : layout === "chips" ? "chips-layout" : layout;
+
     const html = `
       <style>${CARD_STYLES}</style>
-      <ha-card class="${compact ? "compact" : layout === "chips" ? "chips-layout" : layout}${isStale ? " stale" : ""}">
+      <ha-card class="${layoutClass}${isStale ? " stale" : ""}${skinClass ? ` ${skinClass}` : ""}">
         ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, pressure, uv, gust, raining) : ""}
         ${showBody ? `
           ${this._alertsHtml()}

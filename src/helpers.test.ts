@@ -4,9 +4,12 @@ import {
   applyPrefix,
   batteryInfo,
   beaufort,
+  buildRecordBook,
   cardinalToDeg,
   collectAlerts,
+  comfortStats,
   convertValue,
+  currentSeason,
   daysSinceTimestamp,
   degToCardinal,
   displayThresholdValue,
@@ -19,8 +22,10 @@ import {
   normalizeSectionOrder,
   parseWindDirection,
   pm25Meta,
+  precipTimelineBars,
   pressureTrendMeta,
   rainMonthProgress,
+  seasonalSkinClasses,
   storeThresholdValue,
   thresholdCompareValue,
   uvMeta,
@@ -160,6 +165,54 @@ describe("0.7 helpers", () => {
     const stored = storeThresholdValue(12.5, "temp", "metric");
     expect(stored).toBeCloseTo(54.5, 5);
     expect(displayThresholdValue(stored, "temp", "metric")).toBeCloseTo(12.5, 5);
+  });
+});
+
+describe("0.8 helpers", () => {
+  it("builds record book, precip timeline, comfort, and seasonal skins", () => {
+    const now = Date.now();
+    const book = buildRecordBook({
+      temperature: [
+        { state: 40, last_changed: now - 1000 },
+        { state: 95, last_changed: now },
+      ],
+      wind_gust: [{ state: 22, last_changed: now }],
+      rain_rate: [{ state: 0.4, last_changed: now }],
+      rain_today: [{ state: 1.1, last_changed: now }],
+    });
+    expect(book.hottest?.value).toBe(95);
+    expect(book.coldest?.value).toBe(40);
+    expect(book.peakGust?.value).toBe(22);
+
+    const bars = precipTimelineBars(
+      [
+        { state: 0.1, last_changed: now - 3600_000 },
+        { state: 0.5, last_changed: now - 600_000 },
+      ],
+      6,
+      12,
+    );
+    expect(bars.length).toBe(12);
+    expect(Math.max(...bars.map((b) => b.value))).toBeGreaterThan(0);
+
+    const comfort = comfortStats(
+      [
+        { state: 70, last_changed: now - 3600_000 },
+        { state: 90, last_changed: now },
+      ],
+      [
+        { state: 45, last_changed: now - 3600_000 },
+        { state: 80, last_changed: now },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+    );
+    expect(comfort.samples.length).toBe(2);
+    expect(comfort.hoursIn).toBeGreaterThan(0);
+
+    expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "north")).toBe("summer");
+    expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "south")).toBe("winter");
+    expect(seasonalSkinClasses("winter", "rainy")).toContain("skin-winter");
+    expect(seasonalSkinClasses("winter", "rainy")).toContain("cond-rain");
   });
 });
 

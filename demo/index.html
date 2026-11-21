@@ -63,8 +63,8 @@
   </style>
 </head>
 <body>
-  <h1>Mushroom Weather Station Card · v0.7.0 demo</h1>
-  <p>Hourly forecast, alerts, history sparklines, wind rose, rain goals, sun/moon, expanded sensors, chip glance bar.</p>
+  <h1>Mushroom Weather Station Card · v0.8.0 demo</h1>
+  <p>Record book, precip timeline, comfort zones, seasonal skins — plus 0.7 hourly/alerts/sparklines/rose.</p>
   <div class="grid">
     <div id="full"></div>
     <div id="chips"></div>
@@ -203,12 +203,19 @@
         },
       };
 
+      const rainRateHist = Array.from({ length: 24 }, (_, i) => ({
+        s: String(i % 7 === 0 ? 0.35 : i % 5 === 0 ? 0.12 : 0),
+        lu: (now - (23 - i) * 3600 * 1000) / 1000,
+      }));
       const historyPayload = {
-        "sensor.ws_temperature": histSeries(71, 4),
-        "sensor.ws_humidity": histSeries(46, 8),
+        "sensor.ws_temperature": histSeries(71, 8),
+        "sensor.ws_humidity": histSeries(46, 12),
         "sensor.ws_wind_speed": histSeries(6, 3),
+        "sensor.ws_wind_gust": histSeries(12, 5),
         "sensor.ws_relative_pressure": histSeries(30.05, 0.08),
         "sensor.ws_wind_direction": dirHist,
+        "sensor.ws_precipitation_intensity": rainRateHist,
+        "sensor.ws_daily_rain": histSeries(0.3, 0.4),
       };
 
       return {
@@ -262,6 +269,11 @@
       show_history_sparklines: true,
       show_wind_rose: true,
       show_alerts: true,
+      show_precip_timeline: true,
+      show_records: true,
+      show_comfort: true,
+      seasonal_skins: true,
+      records_period: "month",
       weather_entity: "weather.home",
       sun_entity: "sun.sun",
       moon_entity: "sensor.moon_phase",
@@ -274,7 +286,7 @@
       labels: { soil_moisture_1: "Raised bed", soil_moisture_2: "Lawn" },
       section_order: [
         "conditions", "rain", "wind", "sun", "soil",
-        "lightning", "air", "station", "forecast", "battery",
+        "lightning", "air", "station", "records", "comfort", "forecast", "battery",
       ],
     };
 
