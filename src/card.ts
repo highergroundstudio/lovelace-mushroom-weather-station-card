@@ -98,6 +98,9 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _pressureSample: number | null = null;
   private _history: Record<string, HistoryPoint[]> = {};
   private _precipBars: ReturnType<typeof precipTimelineBars> | null = null;
+  /** Full temp/humidity series for comfort (before spark/display thinning). */
+  private _comfortTemp: HistoryPoint[] = [];
+  private _comfortHum: HistoryPoint[] = [];
   private _historyToken = 0;
   private _historyFetchedAt = 0;
   private _historyPending = false;
@@ -181,6 +184,8 @@ class MushroomWeatherStationCard extends HTMLElement {
     }
     this._history = {};
     this._precipBars = null;
+    this._comfortTemp = [];
+    this._comfortHum = [];
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -785,20 +790,20 @@ class MushroomWeatherStationCard extends HTMLElement {
       if (raw == null || token !== this._historyToken) return;
 
       const next = this._ingestHistoryRaw(raw, keyById);
-      // Bucket precip from the full series before any display cap.
+      // Insights from the full series before any display thinning/cap.
       this._precipBars = needPrecip && (next.rain_rate?.length)
         ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours)))
         : null;
+      this._comfortTemp = needComfort ? (next.temperature || []) : [];
+      this._comfortHum = needComfort ? (next.humidity || []) : [];
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           // Cap only after timeline bars are computed.
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
-        } else if (key === "humidity") {
-          // Keep unavailable markers for comfort pairing (do not uniform-downsample).
-          next[key] = pts.length > 2000 ? pts.slice(-2000) : pts;
         } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
+          // humidity/temperature sparks: uniform thin (comfort uses _comfort* copies).
           next[key] = downsampleHistory(pts, 72);
         }
       }
@@ -1124,13 +1129,16 @@ class MushroomWeatherStationCard extends HTMLElement {
 
   private _comfortHtml(): string {
     const band = comfortBandFromConfig(this._config);
-    // History values are in the sensor's native units; compare in °F via threshold helper path.
-    const tempPts = (this._history.temperature || []).map((p) => {
-      const src = this._conv(this._st("temperature"), "°F").src || "°F";
-      const cmp = thresholdCompareValue(p.state, src);
-      return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
-    }).filter((p): p is HistoryPoint => !!p);
-    const humPts = this._history.humidity || [];
+    // Pair from the full comfort series (not spark-thinned _history).
+    const src = this._conv(this._st("temperature"), "°F").src || "°F";
+    const tempPts = (this._comfortTemp.length ? this._comfortTemp : this._history.temperature || [])
+      .map((p) => {
+        if (p.unavailable) return { state: Number.NaN, last_changed: p.last_changed, unavailable: true };
+        const cmp = thresholdCompareValue(p.state, src);
+        return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
+      })
+      .filter((p): p is HistoryPoint => !!p);
+    const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
     const stats = comfortStats(tempPts, humPts, band);
     if (!stats.samples.length) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;

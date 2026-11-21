@@ -600,13 +600,16 @@ export function precipTimelineBars(points: HistoryPoint[], hours: number, bucket
     return { label, value: 0, start: t0 };
   });
 
-  // Minimal/significant history only records transitions. Apply each rate from its
-  // change until the next change (clipped to the window) so sustained rain fills
-  // every overlapping bucket; zero-rate intervals stay dry.
+  // Minimal/significant history only records transitions. Apply each numeric rate
+  // until the next transition (clipped to the window). Unavailable/unknown stops
+  // the active rate so outages stay dry instead of extending the last wet value.
   const sorted = [...points]
-    .filter(isNumericHistoryPoint)
+    .filter((p) => p.unavailable || Number.isFinite(p.state))
     .sort((a, b) => a.last_changed - b.last_changed);
   if (!sorted.length) return bars;
+
+  const rateOf = (p: HistoryPoint): number | null =>
+    (p.unavailable || !Number.isFinite(p.state) ? null : p.state);
 
   let carryIdx = -1;
   for (let i = 0; i < sorted.length; i++) {
@@ -622,14 +625,19 @@ export function precipTimelineBars(points: HistoryPoint[], hours: number, bucket
   };
 
   if (carryIdx >= 0) {
-    const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
-    paint(start, Math.min(end, t1), sorted[carryIdx].state);
+    const rate = rateOf(sorted[carryIdx]);
+    if (rate != null) {
+      const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+      paint(start, Math.min(end, t1), rate);
+    }
   }
   for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const rate = rateOf(sorted[i]);
+    if (rate == null) continue;
     const t0 = Math.max(start, sorted[i].last_changed);
     if (t0 >= end) break;
     const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
-    paint(t0, t1, sorted[i].state);
+    paint(t0, t1, rate);
   }
   return bars;
 }

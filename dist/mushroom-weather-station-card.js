@@ -677,8 +677,9 @@ function precipTimelineBars(points, hours, buckets = 24) {
     }
     return { label, value: 0, start: t0 };
   });
-  const sorted = [...points].filter(isNumericHistoryPoint).sort((a, b) => a.last_changed - b.last_changed);
+  const sorted = [...points].filter((p) => p.unavailable || Number.isFinite(p.state)).sort((a, b) => a.last_changed - b.last_changed);
   if (!sorted.length) return bars;
+  const rateOf = (p) => p.unavailable || !Number.isFinite(p.state) ? null : p.state;
   let carryIdx = -1;
   for (let i = 0; i < sorted.length; i++) {
     if (sorted[i].last_changed <= start) carryIdx = i;
@@ -691,14 +692,19 @@ function precipTimelineBars(points, hours, buckets = 24) {
     for (let i = i0; i <= i1; i++) bars[i].value = Math.max(bars[i].value, rate);
   };
   if (carryIdx >= 0) {
-    const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
-    paint(start, Math.min(end, t1), sorted[carryIdx].state);
+    const rate = rateOf(sorted[carryIdx]);
+    if (rate != null) {
+      const t1 = carryIdx + 1 < sorted.length ? sorted[carryIdx + 1].last_changed : end;
+      paint(start, Math.min(end, t1), rate);
+    }
   }
   for (let i = Math.max(0, carryIdx + 1); i < sorted.length; i++) {
+    const rate = rateOf(sorted[i]);
+    if (rate == null) continue;
     const t0 = Math.max(start, sorted[i].last_changed);
     if (t0 >= end) break;
     const t1 = i + 1 < sorted.length ? Math.min(end, sorted[i + 1].last_changed) : end;
-    paint(t0, t1, sorted[i].state);
+    paint(t0, t1, rate);
   }
   return bars;
 }
@@ -1449,6 +1455,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._pressureSample = null;
     this._history = {};
     this._precipBars = null;
+    this._comfortTemp = [];
+    this._comfortHum = [];
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
@@ -1528,6 +1536,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     this._history = {};
     this._precipBars = null;
+    this._comfortTemp = [];
+    this._comfortHum = [];
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -2041,11 +2051,11 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (raw == null || token !== this._historyToken) return;
       const next = this._ingestHistoryRaw(raw, keyById);
       this._precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
+      this._comfortTemp = needComfort ? next.temperature || [] : [];
+      this._comfortHum = needComfort ? next.humidity || [] : [];
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
-        } else if (key === "humidity") {
-          next[key] = pts.length > 400 ? pts.slice(-400) : pts;
         } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
@@ -2325,12 +2335,13 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   }
   _comfortHtml() {
     const band = comfortBandFromConfig(this._config);
-    const tempPts = (this._history.temperature || []).map((p) => {
-      const src = this._conv(this._st("temperature"), "°F").src || "°F";
+    const src = this._conv(this._st("temperature"), "°F").src || "°F";
+    const tempPts = (this._comfortTemp.length ? this._comfortTemp : this._history.temperature || []).map((p) => {
+      if (p.unavailable) return { state: Number.NaN, last_changed: p.last_changed, unavailable: true };
       const cmp = thresholdCompareValue(p.state, src);
       return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
     }).filter((p) => !!p);
-    const humPts = this._history.humidity || [];
+    const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
     const stats = comfortStats(tempPts, humPts, band);
     if (!stats.samples.length) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;

@@ -262,6 +262,21 @@ describe("0.8 helpers", () => {
     expect(gap.samples.map((s) => s.temp)).toEqual([70, 72]);
     expect(gap.samples.find((s) => s.temp === 71)).toBeUndefined();
 
+    // Unavailable rain-rate must not extend the previous wet rate across the gap.
+    const outage = precipTimelineBars(
+      [
+        { state: 0.6, last_changed: now - 4 * 3600_000 },
+        { state: Number.NaN, last_changed: now - 3 * 3600_000, unavailable: true },
+        { state: 0.2, last_changed: now - 1 * 3600_000 },
+      ],
+      6,
+      12,
+    );
+    expect(outage.some((b) => b.value >= 0.6)).toBe(true);
+    expect(outage.some((b) => b.value > 0 && b.value < 0.6)).toBe(true);
+    // Bucket ~now-2h sits in the unavailable gap (index 8 of 12 over 6h).
+    expect(outage[8]?.value ?? -1).toBe(0);
+
     expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "north")).toBe("summer");
     expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "south")).toBe("winter");
     expect(seasonalSkinClasses("winter", "rainy")).toContain("skin-winter");
