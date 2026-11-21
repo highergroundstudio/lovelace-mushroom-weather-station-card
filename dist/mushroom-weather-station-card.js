@@ -689,7 +689,16 @@ const CARD_STYLES = `
   @media (max-width: 520px) {
     .grid, .wind-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .wind-row { grid-template-columns: 1fr; }
-    .status-chip { display: none; }
+    .header {
+      flex-wrap: wrap;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    .status-chip {
+      order: 3;
+      width: fit-content;
+      max-width: 100%;
+    }
   }
 `;
 const CARD_VERSION = "0.6.0";
