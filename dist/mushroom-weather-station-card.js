@@ -722,10 +722,10 @@ function precipTimelineSvg(bars, width = 280, height = 44) {
   }).join("");
   return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
-function humidityAt(at, humidityAsc) {
-  if (!humidityAsc.length) return null;
+function valueAt(at, seriesAsc) {
+  if (!seriesAsc.length) return null;
   let best = null;
-  for (const p of humidityAsc) {
+  for (const p of seriesAsc) {
     if (p.last_changed <= at) best = p;
     else break;
   }
@@ -744,21 +744,45 @@ function comfortBandFromConfig(config) {
     humidityMax: humidityMax ?? DEFAULT_COMFORT.humidityMax
   };
 }
-function comfortStats(tempPoints, humidityPoints, band) {
+function comfortStats(tempPoints, humidityPoints, band, window2) {
   const samples = [];
-  let hoursIn = 0;
-  let hoursTotal = 0;
   const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
-  for (let i = 0; i < tempPoints.length; i++) {
-    const t = tempPoints[i];
+  const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
+  for (const t of tempAsc) {
     if (!isNumericHistoryPoint(t)) continue;
-    const h = humidityAt(t.last_changed, humidityAsc);
+    const h = valueAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });
-    const next = tempPoints[i + 1];
-    const dtHr = next ? Math.min(0.5, Math.max(0, (next.last_changed - t.last_changed) / 36e5)) : 0.25;
+  }
+  const end = window2?.end ?? Date.now();
+  let start = window2?.start;
+  if (start == null || !Number.isFinite(start)) {
+    const first = Math.min(
+      tempAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+      humidityAsc.find(isNumericHistoryPoint)?.last_changed ?? end
+    );
+    start = first;
+  }
+  const breaks = /* @__PURE__ */ new Set([start, end]);
+  for (const p of tempAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  for (const p of humidityAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  const times = [...breaks].sort((a, b) => a - b);
+  let hoursIn = 0;
+  let hoursTotal = 0;
+  for (let i = 0; i < times.length - 1; i++) {
+    const t0 = times[i];
+    const t1 = times[i + 1];
+    if (!(t1 > t0)) continue;
+    const temp = valueAt(t0, tempAsc);
+    const hum = valueAt(t0, humidityAsc);
+    if (temp == null || hum == null) continue;
+    const dtHr = (t1 - t0) / 36e5;
     hoursTotal += dtHr;
-    const ok = t.state >= band.tempMin && t.state <= band.tempMax && h >= band.humidityMin && h <= band.humidityMax;
+    const ok = temp >= band.tempMin && temp <= band.tempMax && hum >= band.humidityMin && hum <= band.humidityMax;
     if (ok) hoursIn += dtHr;
   }
   const pct = hoursTotal > 0 ? Math.round(hoursIn / hoursTotal * 100) : null;
@@ -1457,6 +1481,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._precipBars = null;
     this._comfortTemp = [];
     this._comfortHum = [];
+    this._historyWindow = null;
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
@@ -1538,6 +1563,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._precipBars = null;
     this._comfortTemp = [];
     this._comfortHum = [];
+    this._historyWindow = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -2053,6 +2079,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this._precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
       this._comfortTemp = needComfort ? next.temperature || [] : [];
       this._comfortHum = needComfort ? next.humidity || [] : [];
+      this._historyWindow = { start: start.getTime(), end: end.getTime() };
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
@@ -2342,7 +2369,11 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
     }).filter((p) => !!p);
     const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
-    const stats = comfortStats(tempPts, humPts, band);
+    const win = this._historyWindow || {
+      start: Date.now() - this._historyHours() * 36e5,
+      end: Date.now()
+    };
+    const stats = comfortStats(tempPts, humPts, band, win);
     if (!stats.samples.length) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
     }

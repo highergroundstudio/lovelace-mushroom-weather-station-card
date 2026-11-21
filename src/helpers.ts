@@ -660,15 +660,14 @@ export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): 
 }
 
 /**
- * Humidity valid at `at`: last sample at or before that time.
+ * Last numeric-or-unavailable sample at or before `at`.
  * HA minimal history omits unchanged duplicates, so a reading hours earlier is
- * still the live value — do not require proximity or pick a future change.
- * An explicit unavailable/unknown transition clears validity until recovery.
+ * still the live value — do not pick a future change. Unavailable clears validity.
  */
-function humidityAt(at: number, humidityAsc: HistoryPoint[]): number | null {
-  if (!humidityAsc.length) return null;
+function valueAt(at: number, seriesAsc: HistoryPoint[]): number | null {
+  if (!seriesAsc.length) return null;
   let best: HistoryPoint | null = null;
-  for (const p of humidityAsc) {
+  for (const p of seriesAsc) {
     if (p.last_changed <= at) best = p;
     else break;
   }
@@ -698,30 +697,60 @@ export function comfortStats(
   tempPoints: HistoryPoint[],
   humidityPoints: HistoryPoint[],
   band: { tempMin: number; tempMax: number; humidityMin: number; humidityMax: number },
+  window?: { start: number; end: number },
 ): ComfortStats {
   const samples: Array<{ temp: number; humidity: number }> = [];
-  let hoursIn = 0;
-  let hoursTotal = 0;
   const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
-  // Approximate dwell time from consecutive samples (capped at 30 minutes each).
-  for (let i = 0; i < tempPoints.length; i++) {
-    const t = tempPoints[i];
+  const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
+
+  // Scatter: one point per numeric temperature with humidity valid at that instant.
+  for (const t of tempAsc) {
     if (!isNumericHistoryPoint(t)) continue;
-    const h = humidityAt(t.last_changed, humidityAsc);
+    const h = valueAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });
-    const next = tempPoints[i + 1];
-    const dtHr = next
-      ? Math.min(0.5, Math.max(0, (next.last_changed - t.last_changed) / 3600000))
-      : 0.25;
+  }
+
+  const end = window?.end ?? Date.now();
+  let start = window?.start;
+  if (start == null || !Number.isFinite(start)) {
+    const first = Math.min(
+      tempAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+      humidityAsc.find(isNumericHistoryPoint)?.last_changed ?? end,
+    );
+    start = first;
+  }
+
+  // Duration: split at every temp and humidity transition so a humidity change
+  // mid-dwell does not keep the previous RH for the whole temp interval.
+  const breaks = new Set<number>([start, end]);
+  for (const p of tempAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  for (const p of humidityAsc) {
+    if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
+  }
+  const times = [...breaks].sort((a, b) => a - b);
+
+  let hoursIn = 0;
+  let hoursTotal = 0;
+  for (let i = 0; i < times.length - 1; i++) {
+    const t0 = times[i];
+    const t1 = times[i + 1];
+    if (!(t1 > t0)) continue;
+    const temp = valueAt(t0, tempAsc);
+    const hum = valueAt(t0, humidityAsc);
+    if (temp == null || hum == null) continue;
+    const dtHr = (t1 - t0) / 3600000;
     hoursTotal += dtHr;
     const ok =
-      t.state >= band.tempMin
-      && t.state <= band.tempMax
-      && h >= band.humidityMin
-      && h <= band.humidityMax;
+      temp >= band.tempMin
+      && temp <= band.tempMax
+      && hum >= band.humidityMin
+      && hum <= band.humidityMax;
     if (ok) hoursIn += dtHr;
   }
+
   const pct = hoursTotal > 0 ? Math.round((hoursIn / hoursTotal) * 100) : null;
   return { hoursIn, hoursTotal, pct, samples };
 }

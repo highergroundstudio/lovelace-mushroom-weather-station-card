@@ -240,10 +240,28 @@ describe("0.8 helpers", () => {
         { state: 80, last_changed: now },
       ],
       { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: now - 3600_000, end: now },
     );
     expect(comfort.samples.length).toBe(3);
     expect(comfort.samples[1]?.humidity).toBe(45);
     expect(comfort.hoursIn).toBeGreaterThan(0);
+
+    // Humidity change mid-temp-interval splits dwell (5 min in-band of 30).
+    const splitStart = now - 3600_000;
+    const split = comfortStats(
+      [
+        { state: 70, last_changed: splitStart },
+        { state: 71, last_changed: splitStart + 30 * 60_000 },
+      ],
+      [
+        { state: 45, last_changed: splitStart },
+        { state: 80, last_changed: splitStart + 5 * 60_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: splitStart, end: splitStart + 30 * 60_000 },
+    );
+    expect(split.hoursIn).toBeCloseTo(5 / 60, 3);
+    expect(split.hoursTotal).toBeCloseTo(0.5, 3);
 
     // Unavailable humidity clears validity until a later recovery sample.
     const gap = comfortStats(

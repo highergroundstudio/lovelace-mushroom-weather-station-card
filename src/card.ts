@@ -101,6 +101,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   /** Full temp/humidity series for comfort (before spark/display thinning). */
   private _comfortTemp: HistoryPoint[] = [];
   private _comfortHum: HistoryPoint[] = [];
+  private _historyWindow: { start: number; end: number } | null = null;
   private _historyToken = 0;
   private _historyFetchedAt = 0;
   private _historyPending = false;
@@ -186,6 +187,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._precipBars = null;
     this._comfortTemp = [];
     this._comfortHum = [];
+    this._historyWindow = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -796,6 +798,7 @@ class MushroomWeatherStationCard extends HTMLElement {
         : null;
       this._comfortTemp = needComfort ? (next.temperature || []) : [];
       this._comfortHum = needComfort ? (next.humidity || []) : [];
+      this._historyWindow = { start: start.getTime(), end: end.getTime() };
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           // Cap only after timeline bars are computed.
@@ -1139,7 +1142,11 @@ class MushroomWeatherStationCard extends HTMLElement {
       })
       .filter((p): p is HistoryPoint => !!p);
     const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
-    const stats = comfortStats(tempPts, humPts, band);
+    const win = this._historyWindow || {
+      start: Date.now() - this._historyHours() * 3600_000,
+      end: Date.now(),
+    };
+    const stats = comfortStats(tempPts, humPts, band, win);
     if (!stats.samples.length) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
     }
