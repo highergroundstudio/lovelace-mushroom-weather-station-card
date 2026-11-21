@@ -97,6 +97,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _prevPressure: number | null = null;
   private _pressureSample: number | null = null;
   private _history: Record<string, HistoryPoint[]> = {};
+  private _precipBars: ReturnType<typeof precipTimelineBars> | null = null;
   private _historyToken = 0;
   private _historyFetchedAt = 0;
   private _historyPending = false;
@@ -179,6 +180,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       this._forecastError = null;
     }
     this._history = {};
+    this._precipBars = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -652,6 +654,21 @@ class MushroomWeatherStationCard extends HTMLElement {
   }
 
   private _parseHistoryPoint(rawState: unknown, changed: unknown): HistoryPoint | null {
+    const t = typeof changed === "number"
+      ? (changed > 1e12 ? changed : changed * 1000)
+      : changed
+        ? new Date(String(changed)).getTime()
+        : NaN;
+    if (!Number.isFinite(t)) return null;
+
+    if (typeof rawState === "string") {
+      const low = rawState.toLowerCase();
+      if (low === "unavailable" || low === "unknown") {
+        // Keep the transition so comfort humidity does not carry through gaps.
+        return { state: Number.NaN, last_changed: t, unavailable: true };
+      }
+    }
+
     let state = num(rawState);
     if (state == null && typeof rawState === "string") {
       const parsed = parseWindDirection({
@@ -661,12 +678,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       });
       state = parsed.deg;
     }
-    const t = typeof changed === "number"
-      ? (changed > 1e12 ? changed : changed * 1000)
-      : changed
-        ? new Date(String(changed)).getTime()
-        : NaN;
-    return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
+    return state == null ? null : { state, last_changed: t };
   }
 
   private _ingestHistoryRaw(
@@ -773,10 +785,17 @@ class MushroomWeatherStationCard extends HTMLElement {
       if (raw == null || token !== this._historyToken) return;
 
       const next = this._ingestHistoryRaw(raw, keyById);
+      // Bucket precip from the full series before any display cap.
+      this._precipBars = needPrecip && (next.rain_rate?.length)
+        ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours)))
+        : null;
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
-          // Keep transitions (including zeros) for interval-filled precip timeline.
+          // Cap only after timeline bars are computed.
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
+        } else if (key === "humidity") {
+          // Keep unavailable markers for comfort pairing (do not uniform-downsample).
+          next[key] = pts.length > 2000 ? pts.slice(-2000) : pts;
         } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
@@ -1012,10 +1031,10 @@ class MushroomWeatherStationCard extends HTMLElement {
 
   private _precipTimelineHtml(): string {
     if (!this._wantPrecipTimeline()) return "";
-    const pts = this._history.rain_rate || [];
-    if (!pts.length) return "";
     const hours = this._historyHours();
-    const bars = precipTimelineBars(pts, hours, Math.min(36, Math.max(12, hours)));
+    const bars = this._precipBars
+      || precipTimelineBars(this._history.rain_rate || [], hours, Math.min(36, Math.max(12, hours)));
+    if (!bars.length || (!this._precipBars && !(this._history.rain_rate || []).length)) return "";
     const peak = Math.max(...bars.map((b) => b.value), 0);
     const peakFmt = peak > 0 ? fmtNum(peak, 2) : "0";
     return `<div class="precip-timeline" data-key="rain_rate" data-entity="${esc(this._config?.entities?.rain_rate || "")}">

@@ -506,12 +506,17 @@ export function formatSunTime(iso: string | undefined, locale?: string): string 
   }
 }
 
+function isNumericHistoryPoint(p: HistoryPoint): boolean {
+  return !p.unavailable && Number.isFinite(p.state);
+}
+
 export function downsampleHistory(points: HistoryPoint[], maxPoints = 36): HistoryPoint[] {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out: HistoryPoint[] = [];
-  const step = (points.length - 1) / (maxPoints - 1);
+  const step = (usable.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
-    out.push(points[Math.round(i * step)]);
+    out.push(usable[Math.round(i * step)]);
   }
   return out;
 }
@@ -522,16 +527,17 @@ export function downsampleHistoryExtrema(
   maxPoints = 72,
   mode: "max" | "min" = "max",
 ): HistoryPoint[] {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out: HistoryPoint[] = [];
-  const bucket = points.length / maxPoints;
+  const bucket = usable.length / maxPoints;
   for (let i = 0; i < maxPoints; i++) {
     const start = Math.floor(i * bucket);
     const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
-    let best = points[start];
-    for (let j = start + 1; j < end && j < points.length; j++) {
-      if (mode === "max" ? points[j].state > best.state : points[j].state < best.state) {
-        best = points[j];
+    let best = usable[start];
+    for (let j = start + 1; j < end && j < usable.length; j++) {
+      if (mode === "max" ? usable[j].state > best.state : usable[j].state < best.state) {
+        best = usable[j];
       }
     }
     out.push(best);
@@ -543,9 +549,10 @@ export function historyExtreme(
   points: HistoryPoint[],
   mode: "min" | "max",
 ): HistoryExtreme | null {
-  if (!points.length) return null;
-  let best = points[0];
-  for (const p of points) {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (!usable.length) return null;
+  let best = usable[0];
+  for (const p of usable) {
     if (mode === "max" ? p.state > best.state : p.state < best.state) best = p;
   }
   return { value: best.state, at: best.last_changed };
@@ -597,7 +604,7 @@ export function precipTimelineBars(points: HistoryPoint[], hours: number, bucket
   // change until the next change (clipped to the window) so sustained rain fills
   // every overlapping bucket; zero-rate intervals stay dry.
   const sorted = [...points]
-    .filter((p) => Number.isFinite(p.state))
+    .filter(isNumericHistoryPoint)
     .sort((a, b) => a.last_changed - b.last_changed);
   if (!sorted.length) return bars;
 
@@ -648,6 +655,7 @@ export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): 
  * Humidity valid at `at`: last sample at or before that time.
  * HA minimal history omits unchanged duplicates, so a reading hours earlier is
  * still the live value — do not require proximity or pick a future change.
+ * An explicit unavailable/unknown transition clears validity until recovery.
  */
 function humidityAt(at: number, humidityAsc: HistoryPoint[]): number | null {
   if (!humidityAsc.length) return null;
@@ -656,7 +664,8 @@ function humidityAt(at: number, humidityAsc: HistoryPoint[]): number | null {
     if (p.last_changed <= at) best = p;
     else break;
   }
-  return best ? best.state : null;
+  if (!best || best.unavailable || !Number.isFinite(best.state)) return null;
+  return best.state;
 }
 
 export function comfortBandFromConfig(config: CardConfig | undefined): {
@@ -689,6 +698,7 @@ export function comfortStats(
   // Approximate dwell time from consecutive samples (capped at 30 minutes each).
   for (let i = 0; i < tempPoints.length; i++) {
     const t = tempPoints[i];
+    if (!isNumericHistoryPoint(t)) continue;
     const h = humidityAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });

@@ -604,26 +604,31 @@ function formatSunTime(iso, locale) {
     return d.toLocaleTimeString();
   }
 }
+function isNumericHistoryPoint(p) {
+  return !p.unavailable && Number.isFinite(p.state);
+}
 function downsampleHistory(points, maxPoints = 36) {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out = [];
-  const step = (points.length - 1) / (maxPoints - 1);
+  const step = (usable.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i++) {
-    out.push(points[Math.round(i * step)]);
+    out.push(usable[Math.round(i * step)]);
   }
   return out;
 }
 function downsampleHistoryExtrema(points, maxPoints = 72, mode = "max") {
-  if (points.length <= maxPoints) return points;
+  const usable = points.filter(isNumericHistoryPoint);
+  if (usable.length <= maxPoints) return usable;
   const out = [];
-  const bucket = points.length / maxPoints;
+  const bucket = usable.length / maxPoints;
   for (let i = 0; i < maxPoints; i++) {
     const start = Math.floor(i * bucket);
     const end = Math.max(start + 1, Math.floor((i + 1) * bucket));
-    let best = points[start];
-    for (let j = start + 1; j < end && j < points.length; j++) {
-      if (mode === "max" ? points[j].state > best.state : points[j].state < best.state) {
-        best = points[j];
+    let best = usable[start];
+    for (let j = start + 1; j < end && j < usable.length; j++) {
+      if (mode === "max" ? usable[j].state > best.state : usable[j].state < best.state) {
+        best = usable[j];
       }
     }
     out.push(best);
@@ -631,9 +636,10 @@ function downsampleHistoryExtrema(points, maxPoints = 72, mode = "max") {
   return out;
 }
 function historyExtreme(points, mode) {
-  if (!points.length) return null;
-  let best = points[0];
-  for (const p of points) {
+  const usable = points.filter(isNumericHistoryPoint);
+  if (!usable.length) return null;
+  let best = usable[0];
+  for (const p of usable) {
     if (mode === "max" ? p.state > best.state : p.state < best.state) best = p;
   }
   return { value: best.state, at: best.last_changed };
@@ -671,7 +677,7 @@ function precipTimelineBars(points, hours, buckets = 24) {
     }
     return { label, value: 0, start: t0 };
   });
-  const sorted = [...points].filter((p) => Number.isFinite(p.state)).sort((a, b) => a.last_changed - b.last_changed);
+  const sorted = [...points].filter(isNumericHistoryPoint).sort((a, b) => a.last_changed - b.last_changed);
   if (!sorted.length) return bars;
   let carryIdx = -1;
   for (let i = 0; i < sorted.length; i++) {
@@ -717,7 +723,8 @@ function humidityAt(at, humidityAsc) {
     if (p.last_changed <= at) best = p;
     else break;
   }
-  return best ? best.state : null;
+  if (!best || best.unavailable || !Number.isFinite(best.state)) return null;
+  return best.state;
 }
 function comfortBandFromConfig(config) {
   const tempMin = num(config?.comfort_temp_min);
@@ -738,6 +745,7 @@ function comfortStats(tempPoints, humidityPoints, band) {
   const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
   for (let i = 0; i < tempPoints.length; i++) {
     const t = tempPoints[i];
+    if (!isNumericHistoryPoint(t)) continue;
     const h = humidityAt(t.last_changed, humidityAsc);
     if (h == null) continue;
     samples.push({ temp: t.state, humidity: h });
@@ -1440,6 +1448,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._prevPressure = null;
     this._pressureSample = null;
     this._history = {};
+    this._precipBars = null;
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
@@ -1518,6 +1527,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this._forecastError = null;
     }
     this._history = {};
+    this._precipBars = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
     this._recordsHistory = {};
@@ -1936,6 +1946,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     return this._config?.records_period === "year" ? 365 : 30;
   }
   _parseHistoryPoint(rawState, changed) {
+    const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
+    if (!Number.isFinite(t)) return null;
+    if (typeof rawState === "string") {
+      const low = rawState.toLowerCase();
+      if (low === "unavailable" || low === "unknown") {
+        return { state: Number.NaN, last_changed: t, unavailable: true };
+      }
+    }
     let state = num(rawState);
     if (state == null && typeof rawState === "string") {
       const parsed = parseWindDirection({
@@ -1943,8 +1961,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       });
       state = parsed.deg;
     }
-    const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
-    return state == null || !Number.isFinite(t) ? null : { state, last_changed: t };
+    return state == null ? null : { state, last_changed: t };
   }
   _ingestHistoryRaw(raw, keyById) {
     const next = {};
@@ -2023,9 +2040,12 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       const raw = await this._fetchHistoryRaw(unique, start, end, false);
       if (raw == null || token !== this._historyToken) return;
       const next = this._ingestHistoryRaw(raw, keyById);
+      this._precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
+        } else if (key === "humidity") {
+          next[key] = pts.length > 400 ? pts.slice(-400) : pts;
         } else if (key === "wind_gust") {
           next[key] = downsampleHistoryExtrema(pts, 96, "max");
         } else {
@@ -2222,10 +2242,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   }
   _precipTimelineHtml() {
     if (!this._wantPrecipTimeline()) return "";
-    const pts = this._history.rain_rate || [];
-    if (!pts.length) return "";
     const hours = this._historyHours();
-    const bars = precipTimelineBars(pts, hours, Math.min(36, Math.max(12, hours)));
+    const bars = this._precipBars || precipTimelineBars(this._history.rain_rate || [], hours, Math.min(36, Math.max(12, hours)));
+    if (!bars.length || !this._precipBars && !(this._history.rain_rate || []).length) return "";
     const peak = Math.max(...bars.map((b) => b.value), 0);
     const peakFmt = peak > 0 ? fmtNum(peak, 2) : "0";
     return `<div class="precip-timeline" data-key="rain_rate" data-entity="${esc(this._config?.entities?.rain_rate || "")}">

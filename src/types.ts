@@ -194,6 +194,8 @@ export interface ConvertedValue {
 export interface HistoryPoint {
   state: number;
   last_changed: number;
+  /** True when HA reported unavailable/unknown at this transition. */
+  unavailable?: boolean;
 }
 
 export interface WindRoseBin {

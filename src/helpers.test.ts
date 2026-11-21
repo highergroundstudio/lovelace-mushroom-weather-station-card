@@ -220,6 +220,14 @@ describe("0.8 helpers", () => {
     const wetBuckets = sustained.filter((b) => b.value > 0).length;
     expect(wetBuckets).toBeGreaterThan(2);
 
+    // Cap-after-compute: early spike survives on the full series, vanishes if capped first.
+    const dense = Array.from({ length: 1500 }, (_, i) => ({
+      state: i === 0 ? 0.8 : 0,
+      last_changed: now - (1500 - i) * 1000,
+    }));
+    expect(Math.max(...precipTimelineBars(dense, 1, 24).map((b) => b.value))).toBe(0.8);
+    expect(Math.max(...precipTimelineBars(dense.slice(-1200), 1, 24).map((b) => b.value))).toBe(0);
+
     const comfort = comfortStats(
       [
         { state: 70, last_changed: now - 3600_000 },
@@ -236,6 +244,23 @@ describe("0.8 helpers", () => {
     expect(comfort.samples.length).toBe(3);
     expect(comfort.samples[1]?.humidity).toBe(45);
     expect(comfort.hoursIn).toBeGreaterThan(0);
+
+    // Unavailable humidity clears validity until a later recovery sample.
+    const gap = comfortStats(
+      [
+        { state: 70, last_changed: now - 3600_000 },
+        { state: 71, last_changed: now - 1800_000 },
+        { state: 72, last_changed: now - 600_000 },
+      ],
+      [
+        { state: 45, last_changed: now - 3600_000 },
+        { state: Number.NaN, last_changed: now - 2700_000, unavailable: true },
+        { state: 50, last_changed: now - 900_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+    );
+    expect(gap.samples.map((s) => s.temp)).toEqual([70, 72]);
+    expect(gap.samples.find((s) => s.temp === 71)).toBeUndefined();
 
     expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "north")).toBe("summer");
     expect(currentSeason(new Date("2026-07-15T12:00:00Z"), "south")).toBe("winter");
