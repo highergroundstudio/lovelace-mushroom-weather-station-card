@@ -9,6 +9,7 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 - One `prefix` field maps Ecowitt-style entities
 - Home Assistant entity pickers for every override
 - Layouts: `full`, `compact`, `chips`
+- Custom section order
 - Threshold colors, wind compass, rain sparkline
 - Soil moisture, lightning, and PM2.5 sections
 - Stale-data warning and pressure trend
@@ -24,4 +25,9 @@ prefix: ws
 layout: full
 show_updated: true
 stale_minutes: 30
+section_order:
+  - conditions
+  - rain
+  - wind
+  - forecast
 ```
