@@ -92,6 +92,9 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _historyPending = false;
   private _forecastPending = false;
   private _forecastReadyKey: string | null = null;
+  /** When set, setup failed because the weather entity was absent; retry after `_forecastRetryAt`. */
+  private _forecastAbsentKey: string | null = null;
+  private _forecastRetryAt = 0;
   private _chipsExpanded = false;
 
   static getStubConfig(): CardConfig {
@@ -195,7 +198,11 @@ class MushroomWeatherStationCard extends HTMLElement {
     }
     this._forecastSubId = null;
     this._forecastPending = false;
-    if (clearReady) this._forecastReadyKey = null;
+    if (clearReady) {
+      this._forecastReadyKey = null;
+      this._forecastAbsentKey = null;
+      this._forecastRetryAt = 0;
+    }
   }
 
   getCardSize(): number {
@@ -451,12 +458,25 @@ class MushroomWeatherStationCard extends HTMLElement {
     // Setup already running for this key.
     if (this._forecastPending && this._forecastSubId === subKey) return;
 
+    const entityPresent = !!entityState(this._hass, id);
+    // Missing-entity backoff: retry immediately when the entity appears, otherwise wait.
+    if (this._forecastAbsentKey === subKey) {
+      if (entityPresent) {
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
+      } else if (Date.now() < this._forecastRetryAt) {
+        return;
+      }
+    }
+
     // Live websocket handlers already cover what we want.
     if (this._forecastSubId === subKey) {
       const dailyOk = !wantDaily || !!this._forecastUnsub;
       const hourlyOk = !wantHourly || !!this._hourlyUnsub;
       if (dailyOk && hourlyOk) {
         this._forecastReadyKey = subKey;
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
         return;
       }
     } else {
@@ -555,17 +575,22 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
 
       if (token === this._forecastToken && dailySettled && hourlySettled) {
-        const entityPresent = !!entityState(this._hass, id);
+        const present = !!entityState(this._hass, id);
         // Latch ready for live unsubs, cached data, or a present entity (incl. empty unsupported types).
-        // If the entity is still missing, leave ready unset so setup retries when it appears.
         if (
-          entityPresent
+          present
           || this._forecastUnsub
           || this._hourlyUnsub
           || this._forecastDays.length
           || this._forecastHours.length
         ) {
           this._forecastReadyKey = subKey;
+          this._forecastAbsentKey = null;
+          this._forecastRetryAt = 0;
+        } else {
+          // Entity still missing — back off so hass ticks do not flood websockets.
+          this._forecastAbsentKey = subKey;
+          this._forecastRetryAt = Date.now() + 30_000;
         }
       }
 

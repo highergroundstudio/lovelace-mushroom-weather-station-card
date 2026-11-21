@@ -1102,6 +1102,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyPending = false;
     this._forecastPending = false;
     this._forecastReadyKey = null;
+    this._forecastAbsentKey = null;
+    this._forecastRetryAt = 0;
     this._chipsExpanded = false;
   }
   static getStubConfig() {
@@ -1204,7 +1206,11 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     this._forecastSubId = null;
     this._forecastPending = false;
-    if (clearReady) this._forecastReadyKey = null;
+    if (clearReady) {
+      this._forecastReadyKey = null;
+      this._forecastAbsentKey = null;
+      this._forecastRetryAt = 0;
+    }
   }
   getCardSize() {
     const layout = this._config?.layout || "full";
@@ -1428,11 +1434,22 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
     if (this._forecastReadyKey === subKey) return;
     if (this._forecastPending && this._forecastSubId === subKey) return;
+    const entityPresent = !!entityState(this._hass, id);
+    if (this._forecastAbsentKey === subKey) {
+      if (entityPresent) {
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
+      } else if (Date.now() < this._forecastRetryAt) {
+        return;
+      }
+    }
     if (this._forecastSubId === subKey) {
       const dailyOk = !wantDaily || !!this._forecastUnsub;
       const hourlyOk = !wantHourly || !!this._hourlyUnsub;
       if (dailyOk && hourlyOk) {
         this._forecastReadyKey = subKey;
+        this._forecastAbsentKey = null;
+        this._forecastRetryAt = 0;
         return;
       }
     } else {
@@ -1524,9 +1541,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         hourlySettled = true;
       }
       if (token === this._forecastToken && dailySettled && hourlySettled) {
-        const entityPresent = !!entityState(this._hass, id);
-        if (entityPresent || this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length) {
+        const present = !!entityState(this._hass, id);
+        if (present || this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length) {
           this._forecastReadyKey = subKey;
+          this._forecastAbsentKey = null;
+          this._forecastRetryAt = 0;
+        } else {
+          this._forecastAbsentKey = subKey;
+          this._forecastRetryAt = Date.now() + 3e4;
         }
       }
       this._renderSignature = null;
