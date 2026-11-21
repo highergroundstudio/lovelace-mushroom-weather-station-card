@@ -1099,6 +1099,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._history = {};
     this._historyToken = 0;
     this._historyFetchedAt = 0;
+    this._historyPending = false;
     this._forecastFetchedKey = null;
     this._chipsExpanded = false;
   }
@@ -1154,6 +1155,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyToken++;
     this._history = {};
     this._historyFetchedAt = 0;
+    this._historyPending = false;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
@@ -1526,14 +1528,19 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._renderSignature = null;
     this._render(true);
   }
+  _historyHours() {
+    return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
+  }
   async _ensureHistory() {
     if (!this._hass || !this._config) return;
     const needSparks = this._config.show_history_sparklines !== false;
     const needRose = this._config.show_wind_rose !== false;
     if (!needSparks && !needRose) return;
-    if (Date.now() - this._historyFetchedAt < 5 * 60 * 1e3 && Object.keys(this._history).length) return;
+    if (this._historyPending) return;
+    if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1e3) return;
+    this._historyPending = true;
     const token = ++this._historyToken;
-    const hours = Math.min(48, Math.max(6, Number(this._config.history_hours) || 24));
+    const hours = this._historyHours();
     const end = /* @__PURE__ */ new Date();
     const start = new Date(end.getTime() - hours * 3600 * 1e3);
     const entityIds = [];
@@ -1612,6 +1619,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this._renderSignature = null;
       this._render(true);
     } catch {
+      if (token === this._historyToken) this._historyFetchedAt = Date.now();
+    } finally {
+      if (token === this._historyToken) this._historyPending = false;
     }
   }
   _sectionTitle(label, compact) {
@@ -1807,7 +1817,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         const rosePts = this._history.wind_direction || [];
         const rose = this._config?.show_wind_rose !== false && rosePts.length ? `<div class="wind-rose" data-key="wind_direction" data-entity="${esc(ctx.wdir?.entity_id || "")}">
               ${windRoseSvg(windRoseBins(rosePts.map((p) => p.state)))}
-              <div class="wind-rose-label">24h rose</div>
+              <div class="wind-rose-label">${this._historyHours()}h rose</div>
             </div>` : "";
         const body = `<div class="wind-row ${rose ? "with-rose" : ""}">
           ${this._compass(ctx.deg, ctx.card)}

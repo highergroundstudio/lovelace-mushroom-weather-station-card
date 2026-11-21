@@ -89,6 +89,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _history: Record<string, HistoryPoint[]> = {};
   private _historyToken = 0;
   private _historyFetchedAt = 0;
+  private _historyPending = false;
   private _forecastFetchedKey: string | null = null;
   private _chipsExpanded = false;
 
@@ -146,6 +147,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._historyToken++;
     this._history = {};
     this._historyFetchedAt = 0;
+    this._historyPending = false;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
@@ -537,15 +539,22 @@ class MushroomWeatherStationCard extends HTMLElement {
     this._render(true);
   }
 
+  private _historyHours(): number {
+    return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
+  }
+
   private async _ensureHistory(): Promise<void> {
     if (!this._hass || !this._config) return;
     const needSparks = this._config.show_history_sparklines !== false;
     const needRose = this._config.show_wind_rose !== false;
     if (!needSparks && !needRose) return;
-    if (Date.now() - this._historyFetchedAt < 5 * 60 * 1000 && Object.keys(this._history).length) return;
+    // Honor cache even for empty results; skip while a request is in flight.
+    if (this._historyPending) return;
+    if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1000) return;
 
+    this._historyPending = true;
     const token = ++this._historyToken;
-    const hours = Math.min(48, Math.max(6, Number(this._config.history_hours) || 24));
+    const hours = this._historyHours();
     const end = new Date();
     const start = new Date(end.getTime() - hours * 3600 * 1000);
     const entityIds: string[] = [];
@@ -638,7 +647,10 @@ class MushroomWeatherStationCard extends HTMLElement {
       this._renderSignature = null;
       this._render(true);
     } catch {
-      /* history optional */
+      /* history optional — still mark attempt so we don't hammer the API */
+      if (token === this._historyToken) this._historyFetchedAt = Date.now();
+    } finally {
+      if (token === this._historyToken) this._historyPending = false;
     }
   }
 
@@ -867,7 +879,7 @@ class MushroomWeatherStationCard extends HTMLElement {
         const rose = this._config?.show_wind_rose !== false && rosePts.length
           ? `<div class="wind-rose" data-key="wind_direction" data-entity="${esc(ctx.wdir?.entity_id || "")}">
               ${windRoseSvg(windRoseBins(rosePts.map((p) => p.state)))}
-              <div class="wind-rose-label">24h rose</div>
+              <div class="wind-rose-label">${this._historyHours()}h rose</div>
             </div>`
           : "";
         const body = `<div class="wind-row ${rose ? "with-rose" : ""}">

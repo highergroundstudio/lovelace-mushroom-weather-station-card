@@ -52,6 +52,7 @@ name: Backyard Station
 prefix: ws
 layout: full
 unit_system: native
+weather_entity: weather.home   # required for hourly / daily forecast
 show_hourly_forecast: true
 show_history_sparklines: true
 show_wind_rose: true
@@ -98,11 +99,13 @@ hide_soil: false
 hide_lightning: false
 hide_air: false
 thresholds:
+  # Cutoffs are stored/compared in imperial (°F / mph), even when unit_system is metric.
+  # The visual editor converts °C/km/h inputs for you; YAML values must use °F / mph.
   uv:
     - above: 8
       color: purple
   temperature:
-    - below: 32
+    - below: 32   # °F cold cutoff (0°C ≈ 32°F)
       color: blue
 labels:
   temperature: Outside

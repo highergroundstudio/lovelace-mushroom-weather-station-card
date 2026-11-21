@@ -157,6 +157,15 @@ function normalizeSectionOrder(order) {
   }
   return out;
 }
+function moveSection(order, index, direction) {
+  const next = [...order];
+  const target = index + direction;
+  if (index < 0 || target < 0 || index >= next.length || target >= next.length) return next;
+  const tmp = next[index];
+  next[index] = next[target];
+  next[target] = tmp;
+  return next;
+}
 function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
@@ -340,8 +349,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         .order-list { display: grid; gap: 6px; }
         .order-row {
           display: grid;
-          grid-template-columns: 28px 1fr;
-          gap: 10px;
+          grid-template-columns: 28px 1fr auto auto;
+          gap: 8px;
           align-items: center;
           padding: 10px 12px;
           border: 1px solid var(--divider-color);
@@ -354,6 +363,17 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         .order-row.drag-over { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px var(--primary-color); }
         .order-row .handle { color: var(--secondary-text-color); font-size: 16px; letter-spacing: -1px; }
         .order-row .name { font-size: 13px; font-weight: 600; }
+        .order-row button {
+          border: 1px solid var(--divider-color);
+          background: transparent;
+          color: var(--primary-text-color);
+          border-radius: 8px;
+          width: 34px;
+          height: 34px;
+          cursor: pointer;
+          font: inherit;
+        }
+        .order-row button:disabled { opacity: 0.35; cursor: default; }
         @media (max-width: 520px) { .row, .slot-extra { grid-template-columns: 1fr; } }
       </style>
       <div class="wrap">
@@ -444,13 +464,15 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       `;
     } else if (tab === "order") {
       body.innerHTML = `
-        <p class="help">Drag sections to reorder. Hidden sections stay listed but do not render.</p>
+        <p class="help">Drag sections to reorder, or use ↑ / ↓. Hidden sections stay listed but do not render.</p>
         <div class="order-list" id="order-list">
           ${order.map(
         (id, index) => `
             <div class="order-row" draggable="true" data-index="${index}">
               <div class="handle" aria-hidden="true">⠿</div>
               <div class="name">${index + 1}. ${esc(SECTION_LABELS[id])}</div>
+              <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+              <button type="button" data-move="down" data-index="${index}" ${index === order.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
             </div>`
       ).join("")}
         </div>
@@ -479,6 +501,15 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
           if (from == null || Number.isNaN(to) || from === to) return;
           const nextOrder = moveSectionTo(order, from, to);
           this._fire({ ...this._config, section_order: nextOrder });
+          void this._render();
+        });
+      });
+      body.querySelectorAll("[data-move]").forEach((btn) => {
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const index = Number(btn.dataset.index);
+          const dir = btn.dataset.move === "up" ? -1 : 1;
+          this._fire({ ...this._config, section_order: moveSection(order, index, dir) });
           void this._render();
         });
       });
