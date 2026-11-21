@@ -1099,6 +1099,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._history = {};
     this._historyToken = 0;
     this._historyFetchedAt = 0;
+    this._forecastFetchedKey = null;
     this._chipsExpanded = false;
   }
   static getStubConfig() {
@@ -1148,6 +1149,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER)
     });
     this._forecastSubId = null;
+    this._forecastFetchedKey = null;
     this._forecastToken++;
     this._historyToken++;
     this._history = {};
@@ -1169,6 +1171,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   disconnectedCallback() {
     this._forecastToken++;
     this._historyToken++;
+    this._forecastSubId = null;
+    this._forecastFetchedKey = null;
     if (this._forecastUnsub) {
       try {
         this._forecastUnsub();
@@ -1421,8 +1425,15 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return;
     }
     const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
-    if (this._forecastSubId === subKey && (this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length)) {
-      return;
+    if (this._forecastSubId === subKey) {
+      const canSubscribe = !!this._hass.connection?.subscribeMessage;
+      if (canSubscribe) {
+        const dailyReady = !wantDaily || !!this._forecastUnsub;
+        const hourlyReady = !wantHourly || !!this._hourlyUnsub;
+        if (dailyReady && hourlyReady) return;
+      } else if (this._forecastFetchedKey === subKey) {
+        return;
+      }
     }
     if (this._forecastUnsub) {
       try {
@@ -1508,6 +1519,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       const hours = await this._fetchForecastType(id, "hourly", token);
       if (token !== this._forecastToken) return;
       if (hours.length) this._forecastHours = hours;
+    }
+    if (token === this._forecastToken) {
+      if (!this._hass.connection?.subscribeMessage) this._forecastFetchedKey = subKey;
     }
     this._renderSignature = null;
     this._render(true);

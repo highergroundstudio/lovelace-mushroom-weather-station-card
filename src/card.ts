@@ -89,6 +89,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   private _history: Record<string, HistoryPoint[]> = {};
   private _historyToken = 0;
   private _historyFetchedAt = 0;
+  private _forecastFetchedKey: string | null = null;
   private _chipsExpanded = false;
 
   static getStubConfig(): CardConfig {
@@ -140,6 +141,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       section_order: normalizeSectionOrder(config.section_order ?? DEFAULT_SECTION_ORDER),
     });
     this._forecastSubId = null;
+    this._forecastFetchedKey = null;
     this._forecastToken++;
     this._historyToken++;
     this._history = {};
@@ -164,6 +166,8 @@ class MushroomWeatherStationCard extends HTMLElement {
   disconnectedCallback(): void {
     this._forecastToken++;
     this._historyToken++;
+    this._forecastSubId = null;
+    this._forecastFetchedKey = null;
     if (this._forecastUnsub) {
       try { this._forecastUnsub(); } catch { /* ignore */ }
       this._forecastUnsub = null;
@@ -432,9 +436,16 @@ class MushroomWeatherStationCard extends HTMLElement {
       return;
     }
     const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
-    // Avoid tearing down websocket subscriptions on every hass state tick.
-    if (this._forecastSubId === subKey && (this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length)) {
-      return;
+    // Skip only when live subscriptions (or a completed one-shot) already cover this key.
+    if (this._forecastSubId === subKey) {
+      const canSubscribe = !!this._hass.connection?.subscribeMessage;
+      if (canSubscribe) {
+        const dailyReady = !wantDaily || !!this._forecastUnsub;
+        const hourlyReady = !wantHourly || !!this._hourlyUnsub;
+        if (dailyReady && hourlyReady) return;
+      } else if (this._forecastFetchedKey === subKey) {
+        return;
+      }
     }
     if (this._forecastUnsub) {
       try { this._forecastUnsub(); } catch { /* ignore */ }
@@ -515,6 +526,11 @@ class MushroomWeatherStationCard extends HTMLElement {
       const hours = await this._fetchForecastType(id, "hourly", token);
       if (token !== this._forecastToken) return;
       if (hours.length) this._forecastHours = hours;
+    }
+
+    if (token === this._forecastToken) {
+      // Mark one-shot complete when websocket subscribe is unavailable.
+      if (!this._hass.connection?.subscribeMessage) this._forecastFetchedKey = subKey;
     }
 
     this._renderSignature = null;
