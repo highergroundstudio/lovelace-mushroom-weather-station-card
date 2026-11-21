@@ -267,9 +267,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         const stored = Number.isFinite(displayed) ? storeThresholdValue(displayed, "temp", system === "native" ? "imperial" : system) : NaN;
         thresholds.temperature = Number.isFinite(stored) ? [{ below: stored, color: "blue" }] : [];
         thresholds.feels_like = thresholds.temperature;
+        next[key] = Number.isFinite(stored) ? stored : value;
       }
       next.thresholds = thresholds;
-      next[key] = value;
+      if (key === "uv_purple_above") next[key] = value;
     } else if (key === "stale_minutes" || key === "forecast_days" || key === "hourly_forecast_hours" || key === "history_hours" || key === "battery_warning_threshold" || key === "rain_month_normal") {
       const n = value === "" ? void 0 : Number(value);
       next[key] = Number.isFinite(n) ? n : value;
@@ -299,7 +300,9 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     const order = normalizeSectionOrder(c.section_order);
     const system = this._unitSystem();
     const tempUnit = thresholdEditorUnit("temp", system === "native" ? "imperial" : system);
-    const storedTempBlue = Number(c.temp_blue_below ?? c.thresholds?.temperature?.find((r) => r.below != null)?.below ?? 32);
+    const storedTempBlue = Number(
+      c.thresholds?.temperature?.find((r) => r.below != null)?.below ?? c.temp_blue_below ?? 32
+    );
     const displayTempBlue = displayThresholdValue(
       Number.isFinite(storedTempBlue) ? storedTempBlue : 32,
       "temp",
@@ -602,12 +605,14 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       }
       const defaultsOn = /* @__PURE__ */ new Set([
         "show_updated",
-        "show_hourly_forecast",
         "show_history_sparklines",
         "show_wind_rose",
         "show_alerts"
       ]);
-      if (defaultsOn.has(item.key)) {
+      if (item.key === "show_hourly_forecast") {
+        const raw = this._config.show_hourly_forecast;
+        sw.checked = raw === false ? false : raw === true ? true : !!this._config.weather_entity;
+      } else if (defaultsOn.has(item.key)) {
         const raw = this._config[item.key];
         sw.checked = raw !== false;
       } else {

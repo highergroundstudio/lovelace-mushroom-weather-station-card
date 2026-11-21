@@ -156,6 +156,9 @@ describe("0.7 helpers", () => {
     expect(windRoseBins([0, 10, 180, 185]).find((b) => b.label === "N")?.count).toBe(2);
     expect(Math.round(displayThresholdValue(32, "temp", "metric"))).toBe(0);
     expect(Math.round(storeThresholdValue(0, "temp", "metric"))).toBe(32);
+    // Round-trip: displayed metric → stored imperial → displayed metric again.
+    const stored = storeThresholdValue(0, "temp", "metric");
+    expect(Math.round(displayThresholdValue(stored, "temp", "metric"))).toBe(0);
   });
 });
 

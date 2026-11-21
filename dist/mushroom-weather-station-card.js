@@ -1134,10 +1134,10 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       actions: {},
       thresholds: {},
       show_updated: true,
-      show_hourly_forecast: true,
       show_history_sparklines: true,
       show_wind_rose: true,
       show_alerts: true,
+      // Hourly follows weather_entity when unset (see _wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
       hourly_forecast_hours: 24,
@@ -1392,8 +1392,16 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return [];
     }
   }
+  _wantHourly() {
+    if (!this._config?.weather_entity) return false;
+    if (this._config.show_hourly_forecast === false) return false;
+    if (this._config.show_hourly_forecast === true) return true;
+    return true;
+  }
   async _ensureForecastSub() {
-    const id = this._config?.show_forecast || this._config?.show_hourly_forecast ? this._config.weather_entity : null;
+    const wantDaily = !!this._config?.show_forecast;
+    const wantHourly = this._wantHourly();
+    const id = wantDaily || wantHourly ? this._config?.weather_entity : null;
     if (!id || !this._hass) {
       if (this._forecastUnsub) {
         try {
@@ -1412,7 +1420,10 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this._forecastSubId = null;
       return;
     }
-    if (this._forecastSubId === id && this._forecastUnsub) ;
+    const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
+    if (this._forecastSubId === subKey && (this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length)) {
+      return;
+    }
     if (this._forecastUnsub) {
       try {
         this._forecastUnsub();
@@ -1427,14 +1438,14 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       }
       this._hourlyUnsub = null;
     }
-    this._forecastSubId = id;
+    this._forecastSubId = subKey;
     const token = ++this._forecastToken;
     this._forecastDays = [];
     this._forecastHours = [];
     this._forecastError = null;
     const attrDays = entityState(this._hass, id)?.attributes?.forecast;
     if (Array.isArray(attrDays) && attrDays.length) this._forecastDays = attrDays;
-    if (this._config?.show_forecast !== false) {
+    if (wantDaily) {
       try {
         if (this._hass.connection?.subscribeMessage) {
           const unsub = await this._hass.connection.subscribeMessage(
@@ -1459,7 +1470,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       } catch {
       }
     }
-    if (this._config?.show_hourly_forecast !== false) {
+    if (wantHourly) {
       try {
         if (this._hass.connection?.subscribeMessage) {
           const unsub = await this._hass.connection.subscribeMessage(
@@ -1483,7 +1494,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       } catch {
       }
     }
-    if (!this._forecastDays.length && this._config?.show_forecast !== false) {
+    if (!this._forecastDays.length && wantDaily) {
       const days = await this._fetchForecastType(id, "daily", token);
       if (token !== this._forecastToken) return;
       if (days.length) {
@@ -1493,7 +1504,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         this._forecastError = "empty";
       }
     }
-    if (!this._forecastHours.length && this._config?.show_hourly_forecast !== false) {
+    if (!this._forecastHours.length && wantHourly) {
       const hours = await this._fetchForecastType(id, "hourly", token);
       if (token !== this._forecastToken) return;
       if (hours.length) this._forecastHours = hours;
@@ -1653,7 +1664,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     </div>`;
   }
   _hourlyHtml() {
-    if (this._config?.show_hourly_forecast === false) return "";
+    if (!this._wantHourly()) return "";
     const id = this._config?.weather_entity;
     if (!id) return "";
     const hoursWanted = Math.min(24, Math.max(6, Number(this._config?.hourly_forecast_hours) || 24));
@@ -1682,10 +1693,12 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   }
   _forecastHtml() {
     const hourly = this._hourlyHtml();
-    const showDaily = this._config?.show_forecast !== false;
+    const showDaily = !!this._config?.show_forecast;
     if (!showDaily && !hourly) return "";
     const id = this._config?.weather_entity;
-    if (!id) return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+    if (!id) {
+      return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+    }
     const st = entityState(this._hass, id);
     if (!st) return `${hourly}<div class="hint">Weather entity ${esc(id)} is missing.</div>`;
     let daily = "";
@@ -1874,7 +1887,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         return this._wrapSection(id, compact, body);
       }
       case "forecast": {
-        if (this._config?.show_forecast === false && this._config?.show_hourly_forecast === false) return "";
+        const showDaily = !!this._config?.show_forecast;
+        const showHourly = this._wantHourly();
+        if (!showDaily && !showHourly) return "";
         return this._wrapSection(id, compact, this._forecastHtml());
       }
       case "battery": {

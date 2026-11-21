@@ -126,10 +126,10 @@ class MushroomWeatherStationCard extends HTMLElement {
       actions: {},
       thresholds: {},
       show_updated: true,
-      show_hourly_forecast: true,
       show_history_sparklines: true,
       show_wind_rose: true,
       show_alerts: true,
+      // Hourly follows weather_entity when unset (see _wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
       hourly_forecast_hours: 24,
@@ -407,10 +407,18 @@ class MushroomWeatherStationCard extends HTMLElement {
     }
   }
 
+  private _wantHourly(): boolean {
+    if (!this._config?.weather_entity) return false;
+    if (this._config.show_hourly_forecast === false) return false;
+    if (this._config.show_hourly_forecast === true) return true;
+    // Unset: enable hourly when a weather entity is already configured.
+    return true;
+  }
+
   private async _ensureForecastSub(): Promise<void> {
-    const id = this._config?.show_forecast || this._config?.show_hourly_forecast
-      ? this._config.weather_entity
-      : null;
+    const wantDaily = !!this._config?.show_forecast;
+    const wantHourly = this._wantHourly();
+    const id = wantDaily || wantHourly ? this._config?.weather_entity : null;
     if (!id || !this._hass) {
       if (this._forecastUnsub) {
         try { this._forecastUnsub(); } catch { /* ignore */ }
@@ -423,8 +431,10 @@ class MushroomWeatherStationCard extends HTMLElement {
       this._forecastSubId = null;
       return;
     }
-    if (this._forecastSubId === id && this._forecastUnsub) {
-      /* still refresh hourly via service if needed */
+    const subKey = `${id}|d:${wantDaily ? 1 : 0}|h:${wantHourly ? 1 : 0}`;
+    // Avoid tearing down websocket subscriptions on every hass state tick.
+    if (this._forecastSubId === subKey && (this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length)) {
+      return;
     }
     if (this._forecastUnsub) {
       try { this._forecastUnsub(); } catch { /* ignore */ }
@@ -434,7 +444,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       try { this._hourlyUnsub(); } catch { /* ignore */ }
       this._hourlyUnsub = null;
     }
-    this._forecastSubId = id;
+    this._forecastSubId = subKey;
     const token = ++this._forecastToken;
     this._forecastDays = [];
     this._forecastHours = [];
@@ -443,7 +453,7 @@ class MushroomWeatherStationCard extends HTMLElement {
     const attrDays = entityState(this._hass, id)?.attributes?.forecast;
     if (Array.isArray(attrDays) && attrDays.length) this._forecastDays = attrDays;
 
-    if (this._config?.show_forecast !== false) {
+    if (wantDaily) {
       try {
         if (this._hass.connection?.subscribeMessage) {
           const unsub = await this._hass.connection.subscribeMessage(
@@ -467,7 +477,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
     }
 
-    if (this._config?.show_hourly_forecast !== false) {
+    if (wantHourly) {
       try {
         if (this._hass.connection?.subscribeMessage) {
           const unsub = await this._hass.connection.subscribeMessage(
@@ -490,7 +500,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
     }
 
-    if (!this._forecastDays.length && this._config?.show_forecast !== false) {
+    if (!this._forecastDays.length && wantDaily) {
       const days = await this._fetchForecastType(id, "daily", token);
       if (token !== this._forecastToken) return;
       if (days.length) {
@@ -501,7 +511,7 @@ class MushroomWeatherStationCard extends HTMLElement {
       }
     }
 
-    if (!this._forecastHours.length && this._config?.show_hourly_forecast !== false) {
+    if (!this._forecastHours.length && wantHourly) {
       const hours = await this._fetchForecastType(id, "hourly", token);
       if (token !== this._forecastToken) return;
       if (hours.length) this._forecastHours = hours;
@@ -699,7 +709,7 @@ class MushroomWeatherStationCard extends HTMLElement {
   }
 
   private _hourlyHtml(): string {
-    if (this._config?.show_hourly_forecast === false) return "";
+    if (!this._wantHourly()) return "";
     const id = this._config?.weather_entity;
     if (!id) return "";
     const hoursWanted = Math.min(24, Math.max(6, Number(this._config?.hourly_forecast_hours) || 24));
@@ -733,10 +743,13 @@ class MushroomWeatherStationCard extends HTMLElement {
 
   private _forecastHtml(): string {
     const hourly = this._hourlyHtml();
-    const showDaily = this._config?.show_forecast !== false;
+    const showDaily = !!this._config?.show_forecast;
     if (!showDaily && !hourly) return "";
     const id = this._config?.weather_entity;
-    if (!id) return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+    if (!id) {
+      // Only nudge when the user opted into a forecast feature that needs an entity.
+      return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+    }
     const st = entityState(this._hass, id);
     if (!st) return `${hourly}<div class="hint">Weather entity ${esc(id)} is missing.</div>`;
     let daily = "";
@@ -937,7 +950,9 @@ class MushroomWeatherStationCard extends HTMLElement {
         return this._wrapSection(id, compact, body);
       }
       case "forecast": {
-        if (this._config?.show_forecast === false && this._config?.show_hourly_forecast === false) return "";
+        const showDaily = !!this._config?.show_forecast;
+        const showHourly = this._wantHourly();
+        if (!showDaily && !showHourly) return "";
         return this._wrapSection(id, compact, this._forecastHtml());
       }
       case "battery": {
