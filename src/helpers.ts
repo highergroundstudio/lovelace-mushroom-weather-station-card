@@ -659,20 +659,17 @@ export function precipTimelineSvg(bars: PrecipBar[], width = 280, height = 44): 
   return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
 
-/**
- * Last numeric-or-unavailable sample at or before `at`.
- * HA minimal history omits unchanged duplicates, so a reading hours earlier is
- * still the live value — do not pick a future change. Unavailable clears validity.
- */
-function valueAt(at: number, seriesAsc: HistoryPoint[]): number | null {
-  if (!seriesAsc.length) return null;
-  let best: HistoryPoint | null = null;
-  for (const p of seriesAsc) {
-    if (p.last_changed <= at) best = p;
-    else break;
+/** Advancing predecessor cursor over a sorted history series (O(n) total). */
+function advanceCursor(
+  cur: { i: number; value: number | null },
+  seriesAsc: HistoryPoint[],
+  at: number,
+): void {
+  while (cur.i + 1 < seriesAsc.length && seriesAsc[cur.i + 1].last_changed <= at) {
+    cur.i += 1;
+    const p = seriesAsc[cur.i];
+    cur.value = p.unavailable || !Number.isFinite(p.state) ? null : p.state;
   }
-  if (!best || best.unavailable || !Number.isFinite(best.state)) return null;
-  return best.state;
 }
 
 export function comfortBandFromConfig(config: CardConfig | undefined): {
@@ -704,11 +701,12 @@ export function comfortStats(
   const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
 
   // Scatter: one point per numeric temperature with humidity valid at that instant.
+  const humScatter = { i: -1, value: null as number | null };
   for (const t of tempAsc) {
     if (!isNumericHistoryPoint(t)) continue;
-    const h = valueAt(t.last_changed, humidityAsc);
-    if (h == null) continue;
-    samples.push({ temp: t.state, humidity: h });
+    advanceCursor(humScatter, humidityAsc, t.last_changed);
+    if (humScatter.value == null) continue;
+    samples.push({ temp: t.state, humidity: humScatter.value });
   }
 
   const end = window?.end ?? Date.now();
@@ -732,22 +730,24 @@ export function comfortStats(
   }
   const times = [...breaks].sort((a, b) => a - b);
 
+  const tempCur = { i: -1, value: null as number | null };
+  const humCur = { i: -1, value: null as number | null };
   let hoursIn = 0;
   let hoursTotal = 0;
   for (let i = 0; i < times.length - 1; i++) {
     const t0 = times[i];
     const t1 = times[i + 1];
     if (!(t1 > t0)) continue;
-    const temp = valueAt(t0, tempAsc);
-    const hum = valueAt(t0, humidityAsc);
-    if (temp == null || hum == null) continue;
+    advanceCursor(tempCur, tempAsc, t0);
+    advanceCursor(humCur, humidityAsc, t0);
+    if (tempCur.value == null || humCur.value == null) continue;
     const dtHr = (t1 - t0) / 3600000;
     hoursTotal += dtHr;
     const ok =
-      temp >= band.tempMin
-      && temp <= band.tempMax
-      && hum >= band.humidityMin
-      && hum <= band.humidityMax;
+      tempCur.value >= band.tempMin
+      && tempCur.value <= band.tempMax
+      && humCur.value >= band.humidityMin
+      && humCur.value <= band.humidityMax;
     if (ok) hoursIn += dtHr;
   }
 

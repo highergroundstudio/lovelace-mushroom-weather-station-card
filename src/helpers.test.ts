@@ -279,6 +279,20 @@ describe("0.8 helpers", () => {
     // temp 50 → cx ≈ 20.8 on the default scale; tail-only thinning would omit it.
     expect(svg).toContain('cx="20.8"');
 
+    // Duration without a scatter sample: humidity recovers after the only temp instant.
+    const durationOnly = comfortStats(
+      [{ state: 70, last_changed: now - 3600_000 }],
+      [
+        { state: Number.NaN, last_changed: now - 3600_000, unavailable: true },
+        { state: 45, last_changed: now - 3600_000 + 10 * 60_000 },
+      ],
+      { tempMin: 65, tempMax: 78, humidityMin: 30, humidityMax: 60 },
+      { start: now - 3600_000, end: now - 3600_000 + 60 * 60_000 },
+    );
+    expect(durationOnly.samples.length).toBe(0);
+    expect(durationOnly.hoursIn).toBeCloseTo(50 / 60, 3);
+    expect(durationOnly.hoursTotal).toBeCloseTo(50 / 60, 3);
+
     // Unavailable humidity clears validity until a later recovery sample.
     const gap = comfortStats(
       [

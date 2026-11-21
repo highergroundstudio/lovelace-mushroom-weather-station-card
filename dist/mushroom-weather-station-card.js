@@ -722,15 +722,12 @@ function precipTimelineSvg(bars, width = 280, height = 44) {
   }).join("");
   return `<svg class="precip-timeline-svg" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" preserveAspectRatio="none" aria-hidden="true">${rects}</svg>`;
 }
-function valueAt(at, seriesAsc) {
-  if (!seriesAsc.length) return null;
-  let best = null;
-  for (const p of seriesAsc) {
-    if (p.last_changed <= at) best = p;
-    else break;
+function advanceCursor(cur, seriesAsc, at) {
+  while (cur.i + 1 < seriesAsc.length && seriesAsc[cur.i + 1].last_changed <= at) {
+    cur.i += 1;
+    const p = seriesAsc[cur.i];
+    cur.value = p.unavailable || !Number.isFinite(p.state) ? null : p.state;
   }
-  if (!best || best.unavailable || !Number.isFinite(best.state)) return null;
-  return best.state;
 }
 function comfortBandFromConfig(config) {
   const tempMin = num(config?.comfort_temp_min);
@@ -748,11 +745,12 @@ function comfortStats(tempPoints, humidityPoints, band, window2) {
   const samples = [];
   const humidityAsc = [...humidityPoints].sort((a, b) => a.last_changed - b.last_changed);
   const tempAsc = [...tempPoints].sort((a, b) => a.last_changed - b.last_changed);
+  const humScatter = { i: -1, value: null };
   for (const t of tempAsc) {
     if (!isNumericHistoryPoint(t)) continue;
-    const h = valueAt(t.last_changed, humidityAsc);
-    if (h == null) continue;
-    samples.push({ temp: t.state, humidity: h });
+    advanceCursor(humScatter, humidityAsc, t.last_changed);
+    if (humScatter.value == null) continue;
+    samples.push({ temp: t.state, humidity: humScatter.value });
   }
   const end = window2?.end ?? Date.now();
   let start = window2?.start;
@@ -771,18 +769,20 @@ function comfortStats(tempPoints, humidityPoints, band, window2) {
     if (p.last_changed > start && p.last_changed < end) breaks.add(p.last_changed);
   }
   const times = [...breaks].sort((a, b) => a - b);
+  const tempCur = { i: -1, value: null };
+  const humCur = { i: -1, value: null };
   let hoursIn = 0;
   let hoursTotal = 0;
   for (let i = 0; i < times.length - 1; i++) {
     const t0 = times[i];
     const t1 = times[i + 1];
     if (!(t1 > t0)) continue;
-    const temp = valueAt(t0, tempAsc);
-    const hum = valueAt(t0, humidityAsc);
-    if (temp == null || hum == null) continue;
+    advanceCursor(tempCur, tempAsc, t0);
+    advanceCursor(humCur, humidityAsc, t0);
+    if (tempCur.value == null || humCur.value == null) continue;
     const dtHr = (t1 - t0) / 36e5;
     hoursTotal += dtHr;
-    const ok = temp >= band.tempMin && temp <= band.tempMax && hum >= band.humidityMin && hum <= band.humidityMax;
+    const ok = tempCur.value >= band.tempMin && tempCur.value <= band.tempMax && humCur.value >= band.humidityMin && humCur.value <= band.humidityMax;
     if (ok) hoursIn += dtHr;
   }
   const pct = hoursTotal > 0 ? Math.round(hoursIn / hoursTotal * 100) : null;
@@ -2378,7 +2378,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       end: Date.now()
     };
     const stats = comfortStats(tempPts, humPts, band, win);
-    if (!stats.samples.length) {
+    if (!stats.samples.length && !(stats.hoursTotal > 0)) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
     }
     const target = this._config?.unit_system || "native";

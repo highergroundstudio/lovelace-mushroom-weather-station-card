@@ -1147,7 +1147,9 @@ class MushroomWeatherStationCard extends HTMLElement {
       end: Date.now(),
     };
     const stats = comfortStats(tempPts, humPts, band, win);
-    if (!stats.samples.length) {
+    // Duration can be valid even when no scatter samples (e.g. humidity recovered
+    // after the only temperature transition).
+    if (!stats.samples.length && !(stats.hoursTotal > 0)) {
       return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
     }
     const target = this._config?.unit_system || "native";
