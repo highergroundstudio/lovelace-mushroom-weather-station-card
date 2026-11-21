@@ -1,9 +1,11 @@
 {
   "name": "lovelace-mushroom-weather-station-card",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "private": true,
   "description": "Home Assistant Lovelace card for personal weather stations",
   "scripts": {
-    "version": "bash scripts/set-version.sh"
+    "version": "bash scripts/set-version.sh",
+    "test": "node scripts/test-helpers.mjs",
+    "demo": "python3 -m http.server 8765 --bind 127.0.0.1"
   }
 }

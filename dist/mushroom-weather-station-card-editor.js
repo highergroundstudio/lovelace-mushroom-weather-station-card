@@ -1,6 +1,6 @@
 /**
  * Mushroom Weather Station Card — visual editor
- * Version 0.4.6
+ * Version 0.5.0
  */
 const CARD_TYPE = "mushroom-weather-station-card";
 const CARD_VERSION =
@@ -34,119 +34,16 @@ const PREFIX_MAP = {
   indoor_temperature: "sensor.{p}_indoor_temperature",
   indoor_humidity: "sensor.{p}_indoor_humidity",
   co2: "sensor.{p}_co2",
+  pm25: "sensor.{p}_pm25",
+  soil_moisture_1: "sensor.{p}_soil_moisture_1",
+  soil_moisture_2: "sensor.{p}_soil_moisture_2",
+  soil_moisture_3: "sensor.{p}_soil_moisture_3",
+  soil_moisture_4: "sensor.{p}_soil_moisture_4",
+  lightning_count: "sensor.{p}_lightning_num",
+  lightning_distance: "sensor.{p}_lightning",
+  lightning_time: "sensor.{p}_lightning_time",
   battery: "binary_sensor.{p}_battery",
 };
-
-const CARDINALS = [
-  "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
-  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
-];
-
-const DEFAULT_THRESHOLDS = {
-  temperature: [
-    { above: 115, color: "purple" },
-    { above: 105, color: "red" },
-    { above: 95, color: "orange" },
-    { above: 80, color: "amber" },
-    { above: 60, color: "green" },
-    { below: 32, color: "blue" },
-  ],
-  feels_like: [
-    { above: 115, color: "purple" },
-    { above: 105, color: "red" },
-    { above: 95, color: "orange" },
-    { above: 80, color: "amber" },
-    { above: 60, color: "green" },
-    { below: 32, color: "blue" },
-  ],
-  uv: [
-    { above: 11, color: "purple" },
-    { above: 8, color: "purple" },
-    { above: 6, color: "orange" },
-    { above: 3, color: "amber" },
-    { below: 3, color: "green" },
-  ],
-  humidity: [{ above: 50, color: "cyan" }, { below: 50, color: "blue" }],
-  dew_point: [{ above: 70, color: "red" }, { above: 60, color: "orange" }, { below: 60, color: "blue" }],
-  wind_speed: [{ above: 20, color: "orange" }],
-  wind_gust: [{ above: 25, color: "orange" }],
-  co2: [{ above: 1200, color: "red" }, { above: 800, color: "orange" }, { below: 800, color: "green" }],
-};
-
-const COLOR_VARS = {
-  purple: "var(--purple-color, #9c27b0)",
-  red: "var(--red-color, #f44336)",
-  orange: "var(--orange-color, #ff9800)",
-  amber: "var(--amber-color, #ffc107)",
-  green: "var(--green-color, #4caf50)",
-  blue: "var(--blue-color, #2196f3)",
-  cyan: "var(--cyan-color, #00bcd4)",
-  teal: "var(--teal-color, #009688)",
-  grey: "var(--disabled-text-color, #9e9e9e)",
-};
-
-const WEATHER_ICONS = {
-  "clear-night": "mdi:weather-night",
-  cloudy: "mdi:weather-cloudy",
-  exceptional: "mdi:alert-circle-outline",
-  fog: "mdi:weather-fog",
-  hail: "mdi:weather-hail",
-  lightning: "mdi:weather-lightning",
-  "lightning-rainy": "mdi:weather-lightning-rainy",
-  partlycloudy: "mdi:weather-partly-cloudy",
-  pouring: "mdi:weather-pouring",
-  rainy: "mdi:weather-rainy",
-  snowy: "mdi:weather-snowy",
-  "snowy-rainy": "mdi:weather-snowy-rainy",
-  sunny: "mdi:weather-sunny",
-  windy: "mdi:weather-windy",
-  "windy-variant": "mdi:weather-windy-variant",
-};
-
-function degToCardinal(deg) {
-  const n = Number(deg);
-  if (!Number.isFinite(n)) return null;
-  return CARDINALS[Math.round((((n % 360) + 360) % 360) / 22.5) % 16];
-}
-
-function num(state) {
-  if (state == null || state === "unknown" || state === "unavailable" || state === "") return null;
-  const n = parseFloat(state);
-  return Number.isFinite(n) ? n : null;
-}
-
-function fmtNum(n, digits = 1) {
-  if (n == null) return "—";
-  return Number(n).toFixed(digits).replace(/\.0$/, "");
-}
-
-function available(st) {
-  return !!(st && st.state !== "unavailable" && st.state !== "unknown");
-}
-
-function colorFromThresholds(value, rules, fallback = "grey") {
-  if (value == null || !rules || !rules.length) return fallback;
-  const aboves = rules.filter((r) => r && r.above != null && r.color).slice().sort((a, b) => Number(b.above) - Number(a.above));
-  for (const rule of aboves) if (value >= Number(rule.above)) return rule.color;
-  const belows = rules.filter((r) => r && r.below != null && r.color).slice().sort((a, b) => Number(a.below) - Number(b.below));
-  for (const rule of belows) if (value <= Number(rule.below)) return rule.color;
-  return fallback;
-}
-
-function iconColorVar(colorName) {
-  if (!colorName) return COLOR_VARS.grey;
-  if (String(colorName).startsWith("#") || String(colorName).startsWith("var(")) return colorName;
-  return COLOR_VARS[colorName] || colorName;
-}
-
-function uvMeta(uv, color) {
-  if (uv == null) return { label: "—", color: color || "grey" };
-  if (uv >= 11) return { label: "Extreme", color: color || "purple" };
-  if (uv >= 8) return { label: "Very high", color: color || "purple" };
-  if (uv >= 6) return { label: "High", color: color || "orange" };
-  if (uv >= 3) return { label: "Moderate", color: color || "amber" };
-  return { label: "Low", color: color || "green" };
-}
 
 function applyPrefix(config) {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
@@ -184,6 +81,14 @@ const EDITOR_FIELDS = [
   { key: "indoor_temperature", label: "Indoor temperature", domains: ["sensor"], classes: ["temperature"] },
   { key: "indoor_humidity", label: "Indoor humidity", domains: ["sensor"], classes: ["humidity"] },
   { key: "co2", label: "CO₂", domains: ["sensor"], classes: ["carbon_dioxide"] },
+  { key: "pm25", label: "PM2.5", domains: ["sensor"], classes: ["pm25"] },
+  { key: "soil_moisture_1", label: "Soil moisture 1", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "soil_moisture_2", label: "Soil moisture 2", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "soil_moisture_3", label: "Soil moisture 3", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "soil_moisture_4", label: "Soil moisture 4", domains: ["sensor"], classes: ["moisture", "humidity"] },
+  { key: "lightning_count", label: "Lightning strikes", domains: ["sensor"], classes: [] },
+  { key: "lightning_distance", label: "Lightning distance", domains: ["sensor"], classes: ["distance"] },
+  { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
   { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] },
 ];
 
@@ -256,7 +161,14 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else if (section === "units") {
       if (value) next.units[key] = value;
       else delete next.units[key];
-    } else if (key === "show_empty" || key === "show_forecast" || key === "tablet_mode" || String(key).startsWith("hide_")) {
+    } else if (
+      key === "show_empty" ||
+      key === "show_forecast" ||
+      key === "tablet_mode" ||
+      key === "show_updated" ||
+      key === "show_beaufort" ||
+      String(key).startsWith("hide_")
+    ) {
       next[key] = !!value;
     } else if (key === "uv_purple_above" || key === "temp_blue_below") {
       const thresholds = { ...(next.thresholds || {}) };
@@ -270,6 +182,9 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       }
       next.thresholds = thresholds;
       next[key] = value;
+    } else if (key === "stale_minutes" || key === "forecast_days" || key === "battery_warning_threshold") {
+      next[key] = value === "" ? undefined : Number(value);
+      if (!Number.isFinite(next[key])) next[key] = value;
     } else {
       next[key] = value;
     }
@@ -371,6 +286,14 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
           </select>
         </label>
         <div id="options-switches" class="switch-list"></div>
+        <div class="row">
+          <label class="field">Forecast days
+            <input data-key="forecast_days" type="number" min="1" max="7" value="${this._esc(c.forecast_days ?? "5")}" placeholder="5" />
+          </label>
+          <label class="field">Stale after (minutes)
+            <input data-key="stale_minutes" type="number" min="0" value="${this._esc(c.stale_minutes ?? "30")}" placeholder="30" />
+          </label>
+        </div>
         <div id="weather-picker"></div>
         <h3>Sections</h3>
         <p class="help">Off = show the section when it has data. On = hide it even if sensors exist.</p>
@@ -408,12 +331,17 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         { key: "tablet_mode", title: "Tablet mode", help: "Tap does nothing. Hold a tile for more-info." },
         { key: "show_empty", title: "Show empty tiles", help: "Keep tiles visible when the entity is missing." },
         { key: "show_forecast", title: "Show forecast row", help: "Needs a weather entity below." },
+        { key: "show_updated", title: "Show last updated", help: "Append relative update time in the subtitle." },
+        { key: "show_beaufort", title: "Show Beaufort scale", help: "Add Beaufort number on the wind speed tile." },
       ]);
       this._fillSwitches("section-switches", [
         { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
         { key: "hide_wind", title: "Hide wind", help: "Compass, speed, gust, max gust" },
         { key: "hide_rain", title: "Hide rain", help: "Sparkline and rain totals" },
         { key: "hide_sun", title: "Hide sun", help: "UV, solar, light" },
+        { key: "hide_soil", title: "Hide soil", help: "Soil moisture channels 1–4" },
+        { key: "hide_lightning", title: "Hide lightning", help: "Strike count, distance, last strike" },
+        { key: "hide_air", title: "Hide air quality", help: "PM2.5 tile" },
         { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
         { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" },
       ]);
@@ -499,7 +427,12 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         sw.style.height = "20px";
         sw.style.flexShrink = "0";
       }
-      sw.checked = !!this._config[item.key];
+      // show_updated defaults to true when unset
+      if (item.key === "show_updated") {
+        sw.checked = this._config.show_updated !== false;
+      } else {
+        sw.checked = !!this._config[item.key];
+      }
       sw.addEventListener("change", (ev) => {
         ev.stopPropagation();
         this._setField(item.key, !!sw.checked);
