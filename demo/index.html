@@ -72,8 +72,8 @@
   </style>
 </head>
 <body>
-  <h1>Mushroom Weather Station Card · v0.5.0 demo</h1>
-  <p>Mock Home Assistant states — full layout with soil, lightning, PM2.5, forecast precip %, and stale warning.</p>
+  <h1>Mushroom Weather Station Card · v0.6.0 demo</h1>
+  <p>Mock Home Assistant states — polished layout, custom section order (rain before wind), soil/lightning/PM2.5, forecast precip %, stale chip.</p>
   <div class="grid">
     <div id="full"></div>
     <div id="stale"></div>
@@ -196,6 +196,10 @@
       show_beaufort: true,
       stale_minutes: 30,
       labels: { soil_moisture_1: "Raised bed", soil_moisture_2: "Lawn" },
+      section_order: [
+        "conditions", "rain", "wind", "sun", "soil",
+        "lightning", "air", "station", "forecast", "battery",
+      ],
     };
 
     mount("full", base, buildHass(fresh));

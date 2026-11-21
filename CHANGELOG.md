@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — 2026-11-21
+
+Developer and UI upgrade.
+
+- **TypeScript source + Vite build** — `src/` modules, `npm run build`, Vitest helpers
+- **Custom section order** — `section_order` YAML + Order tab in the editor (↑ / ↓)
+- **Visual polish** — status chip, section dividers, refined tiles/hero/forecast, softer surfaces
+
 ## 0.5.0 — 2026-11-21
 
 Feature update for personal weather stations (Ecowitt-style add-ons and freshness).
