@@ -48,6 +48,7 @@ describe("units", () => {
   it("normalizes threshold compare values to imperial bands", () => {
     expect(thresholdCompareValue(0, "°C")).toBe(32);
     expect(Math.abs((thresholdCompareValue(25, "km/h") ?? 0) - 15.534)).toBeLessThan(0.01);
+    expect(Math.abs((thresholdCompareValue(10, "m/sec") ?? 0) - 22.3694)).toBeLessThan(0.01);
     expect(thresholdCompareValue(70, "°F")).toBe(70);
   });
 });

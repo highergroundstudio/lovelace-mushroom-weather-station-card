@@ -205,7 +205,7 @@ function unitKind(unit: string): string | null {
 function sourceSystem(unit: string): "imperial" | "metric" | null {
   const u = String(unit || "").toLowerCase().replace("°", "");
   if (["f", "mph", "in", "in/h", "in/hr", "inhg"].includes(u)) return "imperial";
-  if (["c", "km/h", "kmh", "kph", "m/s", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb"].includes(u)) return "metric";
+  if (["c", "km/h", "kmh", "kph", "m/s", "m/sec", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb"].includes(u)) return "metric";
   return null;
 }
 
