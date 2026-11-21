@@ -95,20 +95,22 @@ const EDITOR_FIELDS = [
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
   { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] }
 ];
-function isPrefixDerived(entityId, key) {
-  const template = PREFIX_MAP[key];
-  if (!template || !entityId) return false;
-  const pattern = `^${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\{p\\}", ".+")}$`;
-  return new RegExp(pattern).test(entityId);
-}
-function applyPrefix(config) {
+function applyPrefix(config, previousPrefix) {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   if (!prefix) return { ...config };
+  const prev = (previousPrefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   const entities = { ...config.entities || {} };
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
     const derived = template.replace("{p}", prefix);
     const current = entities[key];
-    if (!current || isPrefixDerived(current, key)) entities[key] = derived;
+    if (!current) {
+      entities[key] = derived;
+      continue;
+    }
+    if (prev) {
+      const oldDerived = template.replace("{p}", prev);
+      if (current === oldDerived) entities[key] = derived;
+    }
   }
   return { ...config, entities };
 }
@@ -232,7 +234,9 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else {
       next[key] = value;
     }
-    if (key === "prefix") next.entities = applyPrefix(next).entities;
+    if (key === "prefix") {
+      next.entities = applyPrefix(next, this._config.prefix).entities;
+    }
     this._fire(next);
     void this._render();
   }

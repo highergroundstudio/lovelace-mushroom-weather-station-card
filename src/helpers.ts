@@ -90,22 +90,24 @@ export function beaufort(mph: number | null | undefined): number | null {
   return 12;
 }
 
-function isPrefixDerived(entityId: string, key: string): boolean {
-  const template = PREFIX_MAP[key];
-  if (!template || !entityId) return false;
-  const pattern = `^${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\{p\\}", ".+")}$`;
-  return new RegExp(pattern).test(entityId);
-}
-
-export function applyPrefix(config: CardConfig): CardConfig {
+export function applyPrefix(config: CardConfig, previousPrefix?: string): CardConfig {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   if (!prefix) return { ...config };
+  const prev = (previousPrefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   const entities = { ...(config.entities || {}) };
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
     const derived = template.replace("{p}", prefix);
     const current = entities[key];
-    // Fill empty slots, and refresh previous prefix-derived IDs when prefix changes.
-    if (!current || isPrefixDerived(current, key)) entities[key] = derived;
+    if (!current) {
+      entities[key] = derived;
+      continue;
+    }
+    // Only rewrite IDs that exactly match the previous prefix template.
+    // Do not pattern-match arbitrary overrides like sensor.outdoor_temperature.
+    if (prev) {
+      const oldDerived = template.replace("{p}", prev);
+      if (current === oldDerived) entities[key] = derived;
+    }
   }
   return { ...config, entities };
 }

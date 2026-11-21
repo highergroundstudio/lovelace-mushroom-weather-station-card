@@ -109,8 +109,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     } else {
       (next as Record<string, unknown>)[key] = value;
     }
-    // Refresh prefix-derived entity IDs when prefix changes; keep true overrides.
-    if (key === "prefix") next.entities = applyPrefix(next).entities;
+    // Refresh only entities that matched the previous prefix; keep true overrides.
+    if (key === "prefix") {
+      next.entities = applyPrefix(next, this._config.prefix).entities;
+    }
     this._fire(next);
     void this._render();
   }

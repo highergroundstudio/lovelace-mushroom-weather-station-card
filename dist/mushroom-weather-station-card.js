@@ -219,20 +219,22 @@ function beaufort(mph) {
   if (s < 73) return 11;
   return 12;
 }
-function isPrefixDerived(entityId, key) {
-  const template = PREFIX_MAP[key];
-  if (!template || !entityId) return false;
-  const pattern = `^${template.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace("\\{p\\}", ".+")}$`;
-  return new RegExp(pattern).test(entityId);
-}
-function applyPrefix(config) {
+function applyPrefix(config, previousPrefix) {
   const prefix = (config.prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
   if (!prefix) return { ...config };
+  const prev = "".trim().replace(/^sensor\./, "").replace(/_+$/, "");
   const entities = { ...config.entities || {} };
   for (const [key, template] of Object.entries(PREFIX_MAP)) {
     const derived = template.replace("{p}", prefix);
     const current = entities[key];
-    if (!current || isPrefixDerived(current, key)) entities[key] = derived;
+    if (!current) {
+      entities[key] = derived;
+      continue;
+    }
+    if (prev) {
+      const oldDerived = template.replace("{p}", prev);
+      if (current === oldDerived) entities[key] = derived;
+    }
   }
   return { ...config, entities };
 }

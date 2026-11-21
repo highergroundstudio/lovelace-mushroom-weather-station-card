@@ -72,15 +72,27 @@ describe("prefix and section order", () => {
     expect(cfg.entities?.soil_moisture_2).toBe("sensor.ws_soil_moisture_2");
     expect(cfg.entities?.pm25).toBe("sensor.ws_pm25");
 
-    const renamed = applyPrefix({
-      prefix: "station",
-      entities: {
-        temperature: "sensor.ws_temperature",
-        humidity: "sensor.custom_outside_rh",
+    const renamed = applyPrefix(
+      {
+        prefix: "station",
+        entities: {
+          temperature: "sensor.ws_temperature",
+          humidity: "sensor.custom_outside_rh",
+          dew_point: "sensor.outdoor_dew_point",
+        },
       },
-    });
+      "ws",
+    );
     expect(renamed.entities?.temperature).toBe("sensor.station_temperature");
     expect(renamed.entities?.humidity).toBe("sensor.custom_outside_rh");
+    // Lookalike override must not be rewritten without previousPrefix match.
+    expect(renamed.entities?.dew_point).toBe("sensor.outdoor_dew_point");
+
+    const untouched = applyPrefix({
+      prefix: "station",
+      entities: { temperature: "sensor.outdoor_temperature" },
+    });
+    expect(untouched.entities?.temperature).toBe("sensor.outdoor_temperature");
   });
 
   it("normalizes and moves section order", () => {
