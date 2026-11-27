@@ -13,6 +13,7 @@ export type SectionId =
   | "lightning"
   | "air"
   | "station"
+  | "health"
   | "records"
   | "comfort"
   | "forecast"
@@ -25,6 +26,7 @@ export interface ThresholdRule {
 }
 
 export interface ActionConfig {
+  /** more-info | navigate | url | call-service | graph | none */
   action?: string;
   navigation_path?: string;
   url_path?: string;
@@ -62,6 +64,14 @@ export interface CardConfig {
   actions?: Record<string, TileActions>;
   thresholds?: Record<string, ThresholdRule[]>;
   section_order?: SectionId[];
+  /** UI language (`en`, `de`, …). Defaults to the Home Assistant user language. */
+  language?: string;
+  /** Tap numeric tiles to open the history graph popup instead of more-info. */
+  graph_popup?: boolean;
+  /** Calculate feels-like / dew point when the station has no sensor for them. */
+  derive_missing?: boolean;
+  /** Battery entities for the health section; auto-detected from `prefix` when empty. */
+  battery_entities?: string[] | string;
   show_empty?: boolean;
   show_forecast?: boolean;
   show_hourly_forecast?: boolean;
@@ -103,6 +113,7 @@ export interface CardConfig {
   hide_lightning?: boolean;
   hide_air?: boolean;
   hide_more?: boolean;
+  hide_health?: boolean;
   hide_records?: boolean;
   hide_comfort?: boolean;
   hide_battery?: boolean;
@@ -139,6 +150,8 @@ export interface HassEntity {
   state: string;
   last_updated?: string;
   last_changed?: string;
+  /** HA 2024.3+: moves on every report, even when the value is unchanged. */
+  last_reported?: string;
   attributes: Record<string, unknown> & {
     unit_of_measurement?: string;
     friendly_name?: string;
@@ -168,7 +181,8 @@ export type ForecastDay = ForecastItem;
 
 export interface HomeAssistant {
   states: Record<string, HassEntity>;
-  locale?: { language?: string };
+  locale?: { language?: string; number_format?: string };
+  language?: string;
   themes?: { darkMode?: boolean };
   callService: (domain: string, service: string, data?: Record<string, unknown>) => void;
   callApi?: <T = unknown>(method: string, path: string, data?: unknown) => Promise<T>;
@@ -177,10 +191,7 @@ export interface HomeAssistant {
       callback: (ev: { forecast?: ForecastItem[] }) => void,
       msg: Record<string, unknown>,
     ) => Promise<() => void>;
-    sendMessagePromise?: (msg: Record<string, unknown>) => Promise<{
-      response?: Record<string, { forecast?: ForecastItem[] }>;
-      [key: string]: unknown;
-    }>;
+    sendMessagePromise?: (msg: Record<string, unknown>) => Promise<any>;
   };
 }
 

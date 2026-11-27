@@ -65,26 +65,12 @@ export const DEFAULT_SECTION_ORDER: SectionId[] = [
   "lightning",
   "air",
   "station",
+  "health",
   "records",
   "comfort",
   "forecast",
   "battery",
 ];
-
-export const SECTION_LABELS: Record<SectionId, string> = {
-  conditions: "Conditions",
-  wind: "Wind",
-  rain: "Rain",
-  sun: "Sun & moon",
-  soil: "Soil",
-  lightning: "Lightning",
-  air: "Air quality",
-  station: "Station",
-  records: "Record book",
-  comfort: "Comfort",
-  forecast: "Forecast",
-  battery: "Battery",
-};
 
 /** Default outdoor comfort band in imperial units (°F / %RH). */
 export const DEFAULT_COMFORT = {
@@ -190,6 +176,18 @@ export const ALERT_SEVERITY_COLOR: Record<string, string> = {
   unknown: "grey",
 };
 
+/** Tiles that can open the graph popup (numeric, history-friendly sensors). */
+export const GRAPH_KEYS = new Set<string>([
+  "temperature", "feels_like", "humidity", "dew_point", "temp_high", "temp_low",
+  "wind_speed", "wind_gust", "max_gust", "rain_rate", "rain_today", "rain_event",
+  "rain_week", "rain_month", "rain_year", "uv", "irradiance", "illuminance",
+  "pressure", "pressure_abs", "indoor_temperature", "indoor_humidity", "co2",
+  "pm25", "aqi", "voc", "noise", "leaf_wetness", "lightning_count",
+  "lightning_distance", "signal_strength",
+  ...Array.from({ length: 8 }, (_, i) => `soil_moisture_${i + 1}`),
+  ...Array.from({ length: 8 }, (_, i) => `soil_temperature_${i + 1}`),
+]);
+
 export const HISTORY_SPARK_KEYS = ["temperature", "humidity", "wind_speed", "pressure"] as const;
 
 export const EDITOR_FIELDS = [
@@ -239,4 +237,5 @@ export const EDITOR_FIELDS = [
   { key: "lightning_distance", label: "Lightning distance", domains: ["sensor"], classes: ["distance"] },
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
   { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] },
+  { key: "signal_strength", label: "Signal strength", domains: ["sensor"], classes: ["signal_strength"] },
 ] as const;

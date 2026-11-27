@@ -26,65 +26,140 @@
       --green-color: #81c995;
       --red-color: #e57373;
       --purple-color: #ba68c8;
+      --page-bg: radial-gradient(1200px 600px at 20% 0%, #243044, #12151a 55%);
       color-scheme: dark;
+    }
+    :root[data-theme="light"] {
+      --primary-color: #0288d1;
+      --accent-color: #00838f;
+      --primary-text-color: #1c1f23;
+      --secondary-text-color: #5f6368;
+      --card-background-color: #ffffff;
+      --ha-card-background: #ffffff;
+      --secondary-background-color: rgba(0, 0, 0, 0.05);
+      --divider-color: #dadce0;
+      --warning-color: #e37400;
+      --error-color: #d93025;
+      --success-color: #188038;
+      --info-color: #1a73e8;
+      --cyan-color: #00acc1;
+      --teal-color: #00897b;
+      --blue-color: #1e88e5;
+      --orange-color: #f57c00;
+      --amber-color: #f9a825;
+      --green-color: #43a047;
+      --red-color: #e53935;
+      --purple-color: #8e24aa;
+      --page-bg: linear-gradient(180deg, #eef3f8, #f7f9fb);
+      color-scheme: light;
     }
     body {
       margin: 0;
-      font-family: "Segoe UI", system-ui, sans-serif;
-      background: radial-gradient(1200px 600px at 20% 0%, #243044, #12151a 55%);
+      font-family: "Segoe UI", Roboto, system-ui, sans-serif;
+      background: var(--page-bg);
       color: var(--primary-text-color);
       min-height: 100vh;
-      padding: 24px;
+      padding: 24px 16px;
       box-sizing: border-box;
     }
-    h1 { font-size: 20px; margin: 0 0 8px; }
-    p { color: var(--secondary-text-color); margin: 0 0 20px; }
+    header { max-width: 1280px; margin: 0 auto 18px; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    header p { color: var(--secondary-text-color); margin: 0 0 14px; font-size: 14px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; font-size: 13px; }
+    .controls label { display: inline-flex; gap: 6px; align-items: center; }
+    .controls select {
+      font: inherit; padding: 5px 8px; border-radius: 8px;
+      border: 1px solid var(--divider-color); background: var(--card-background-color); color: inherit;
+    }
     .grid {
       display: grid;
       gap: 20px;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+      align-items: start;
       max-width: 1280px;
+      margin: 0 auto;
     }
+    .col { display: grid; gap: 20px; min-width: 0; }
+    .caption { font-size: 12px; color: var(--secondary-text-color); margin: 0 0 6px 4px; letter-spacing: 0.04em; text-transform: uppercase; }
     ha-card, mushroom-weather-station-card { display: block; }
-    ha-icon {
-      display: inline-block;
-      width: 22px;
-      height: 22px;
-      background: transparent;
-    }
-    ha-icon::before {
-      content: "●";
-      font-size: 14px;
-      line-height: 22px;
-      display: block;
-      text-align: center;
-      color: inherit;
-    }
+    ha-icon { display: inline-flex; width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px); vertical-align: middle; }
+    ha-icon svg { width: 100%; height: 100%; fill: currentColor; }
+    a { color: var(--primary-color); }
   </style>
 </head>
 <body>
-  <h1>Mushroom Weather Station Card · v0.8.0 demo</h1>
-  <p>Record book, precip timeline, comfort zones, seasonal skins — plus 0.7 hourly/alerts/sparklines/rose.</p>
+  <header>
+    <h1>Mushroom Weather Station Card · live demo</h1>
+    <p>Simulated sensors and history, no Home Assistant needed. Tap a tile for the graph popup.
+      <a href="https://github.com/highergroundstudio/lovelace-mushroom-weather-station-card">Source &amp; install</a></p>
+    <div class="controls">
+      <label>Language
+        <select id="lang">
+          <option value="en">English</option>
+          <option value="de">Deutsch</option>
+          <option value="fr">Français</option>
+          <option value="es">Español</option>
+          <option value="nl">Nederlands</option>
+        </select>
+      </label>
+      <label>Units
+        <select id="units">
+          <option value="imperial">Imperial</option>
+          <option value="metric">Metric</option>
+        </select>
+      </label>
+      <label>Theme
+        <select id="theme">
+          <option value="dark">Dark</option>
+          <option value="light">Light</option>
+        </select>
+      </label>
+    </div>
+  </header>
   <div class="grid">
-    <div id="full"></div>
-    <div id="chips"></div>
-    <div id="compact"></div>
+    <div class="col"><div><div class="caption">layout: full</div><div id="full"></div></div></div>
+    <div class="col">
+      <div><div class="caption">layout: chips</div><div id="chips"></div></div>
+      <div><div class="caption">layout: compact</div><div id="compact"></div></div>
+    </div>
   </div>
 
   <script type="module">
+    // Real Material Design Icons when available (Pages build copies them to ./vendor).
+    let mdi = null;
+    for (const src of ["./vendor/mdi.js", "../node_modules/@mdi/js/mdi.js", "https://cdn.jsdelivr.net/npm/@mdi/js@7.4.47/mdi.js"]) {
+      try { mdi = await import(src); break; } catch { /* next */ }
+    }
+    const pathFor = (name) => {
+      if (!mdi || !name) return null;
+      const key = "mdi" + name.replace(/^mdi:/, "").split("-").map((p) => p[0].toUpperCase() + p.slice(1)).join("");
+      return mdi[key] || null;
+    };
+
     if (!customElements.get("ha-card")) {
-      customElements.define("ha-card", class extends HTMLElement {});
+      customElements.define("ha-card", class extends HTMLElement {
+        connectedCallback() { this.style.display = "block"; }
+      });
     }
     if (!customElements.get("ha-icon")) {
       customElements.define("ha-icon", class extends HTMLElement {
         static get observedAttributes() { return ["icon"]; }
-        attributeChangedCallback() { this.title = this.getAttribute("icon") || ""; }
+        connectedCallback() { this.paint(); }
+        attributeChangedCallback() { this.paint(); }
+        paint() {
+          const d = pathFor(this.getAttribute("icon"));
+          // Styles live on the inner SVG: document CSS does not reach into the card's
+          // shadow root, and the card owns this element's own style attribute.
+          const svg = 'style="display:block;width:var(--mdc-icon-size,24px);height:var(--mdc-icon-size,24px);fill:currentColor" viewBox="0 0 24 24" aria-hidden="true"';
+          this.innerHTML = d ? `<svg ${svg}><path d="${d}"/></svg>` : `<svg ${svg}><circle cx="12" cy="12" r="5"/></svg>`;
+        }
       });
     }
 
     await import("../dist/mushroom-weather-station-card.js");
 
     const now = Date.now();
+    const HOUR = 3600 * 1000;
     const fresh = new Date(now - 2 * 60 * 1000).toISOString();
 
     function sensor(id, state, attrs = {}, updated = fresh) {
@@ -93,22 +168,54 @@
         state: String(state),
         last_updated: updated,
         last_changed: updated,
-        attributes: { friendly_name: id, ...attrs },
+        last_reported: updated,
+        attributes: { friendly_name: id.split(".")[1].replace(/_/g, " ").replace(/^ws /, "WS "), ...attrs },
       };
     }
 
-    function histSeries(base, wobble = 1) {
+    // Deterministic pseudo-random so screenshots are stable.
+    let seed = 7;
+    const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+    // Diurnal model: value at time t for a base/amplitude.
+    const diurnal = (t, base, amp, phase = 15) => base + amp * Math.sin(((new Date(t).getHours() - phase + 6) / 24) * 2 * Math.PI);
+    const models = {
+      "sensor.ws_temperature": (t) => diurnal(t, 62, 11) + Math.sin(t / (5 * 86400000)) * 6,
+      "sensor.ws_humidity": (t) => 60 - diurnal(t, 0, 18),
+      "sensor.ws_wind_speed": (t) => Math.max(0, 6 + Math.sin(t / 7200000) * 4),
+      "sensor.ws_wind_gust": (t) => Math.max(0, 11 + Math.sin(t / 5400000) * 7),
+      "sensor.ws_relative_pressure": (t) => 30.0 + Math.sin(t / (3 * 86400000)) * 0.25,
+      "sensor.ws_precipitation_intensity": (t) => (Math.sin(t / 26000000) > 0.85 ? 0.3 : 0),
+      "sensor.ws_daily_rain": (t) => Math.max(0, Math.sin(t / 26000000) * 0.6),
+      "sensor.ws_uv_index": (t) => Math.max(0, diurnal(t, 2, 4, 13)),
+      "sensor.ws_indoor_temperature": (t) => 71 + Math.sin(t / 9000000),
+      "sensor.ws_co2": (t) => 620 + Math.sin(t / 11000000) * 140,
+      "sensor.ws_pm25": (t) => 14 + Math.sin(t / 13000000) * 8,
+      "sensor.ws_soil_moisture_1": (t) => 42 - ((t / 86400000) % 4) * 3,
+    };
+
+    function historyFor(id, start, end) {
+      const model = models[id];
+      if (!model) return [];
       const out = [];
-      for (let i = 24; i >= 0; i--) {
-        out.push({
-          s: String(base + Math.sin(i / 3) * wobble),
-          lu: (now - i * 3600 * 1000) / 1000,
-        });
-      }
+      for (let t = start; t <= end; t += 10 * 60 * 1000) out.push({ s: String(model(t).toFixed(2)), lu: t / 1000 });
       return out;
     }
 
-    function buildHass() {
+    function statsFor(id, start, end, period) {
+      const model = models[id];
+      if (!model) return [];
+      const step = period === "day" ? 86400000 : HOUR;
+      const rows = [];
+      for (let t = Math.floor(start / step) * step; t < end - step; t += step) {
+        const samples = Array.from({ length: 6 }, (_, i) => model(t + (i * step) / 6));
+        const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+        rows.push({ start: t, end: t + step, mean, min: Math.min(...samples) - rand() * 0.4, max: Math.max(...samples) + rand() * 0.4, state: samples[5] });
+      }
+      return rows;
+    }
+
+    function buildHass(language) {
       const daily = [
         { datetime: new Date(now).toISOString(), condition: "sunny", temperature: 78, templow: 58, precipitation_probability: 10 },
         { datetime: new Date(now + 86400000).toISOString(), condition: "rainy", temperature: 70, templow: 55, precipitation_probability: 70 },
@@ -117,110 +224,73 @@
         { datetime: new Date(now + 4 * 86400000).toISOString(), condition: "sunny", temperature: 76, templow: 56, precipitation_probability: 5 },
       ];
       const hourly = Array.from({ length: 24 }, (_, i) => ({
-        datetime: new Date(now + i * 3600 * 1000).toISOString(),
+        datetime: new Date(now + i * HOUR).toISOString(),
         condition: i % 5 === 0 ? "rainy" : i % 3 === 0 ? "partlycloudy" : "sunny",
         temperature: 68 + Math.round(Math.sin(i / 3) * 6),
         precipitation_probability: i % 5 === 0 ? 60 : 10 + (i % 4) * 5,
       }));
-      const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-      const dirHist = Array.from({ length: 24 }, (_, i) => ({
-        s: dirs[i % dirs.length],
-        lu: (now - i * 3600 * 1000) / 1000,
-      }));
+      const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "SE", "SE", "S"];
+      const val = (id, d = 1) => models[id](now).toFixed(d);
 
       const states = {
-        "sensor.ws_temperature": sensor("sensor.ws_temperature", 71.2, { unit_of_measurement: "°F", device_class: "temperature" }),
-        "sensor.ws_feels_like": sensor("sensor.ws_feels_like", 71.0, { unit_of_measurement: "°F" }),
-        "sensor.ws_humidity": sensor("sensor.ws_humidity", 46, { unit_of_measurement: "%" }),
-        "sensor.ws_dew_point": sensor("sensor.ws_dew_point", 49.1, { unit_of_measurement: "°F" }),
-        "sensor.ws_temp_max": sensor("sensor.ws_temp_max", 78, { unit_of_measurement: "°F" }),
-        "sensor.ws_temp_min": sensor("sensor.ws_temp_min", 58, { unit_of_measurement: "°F" }),
-        "sensor.ws_wind_speed": sensor("sensor.ws_wind_speed", 6.4, { unit_of_measurement: "mph" }),
-        "sensor.ws_wind_gust": sensor("sensor.ws_wind_gust", 11.2, { unit_of_measurement: "mph" }),
+        "sensor.ws_temperature": sensor("sensor.ws_temperature", val("sensor.ws_temperature"), { unit_of_measurement: "°F", device_class: "temperature", state_class: "measurement" }),
+        // No feels-like or dew point sensor: the card calculates them.
+        "sensor.ws_humidity": sensor("sensor.ws_humidity", val("sensor.ws_humidity", 0), { unit_of_measurement: "%" }),
+        "sensor.ws_temp_max": sensor("sensor.ws_temp_max", 74, { unit_of_measurement: "°F" }),
+        "sensor.ws_temp_min": sensor("sensor.ws_temp_min", 51, { unit_of_measurement: "°F" }),
+        "sensor.ws_wind_speed": sensor("sensor.ws_wind_speed", val("sensor.ws_wind_speed"), { unit_of_measurement: "mph" }),
+        "sensor.ws_wind_gust": sensor("sensor.ws_wind_gust", val("sensor.ws_wind_gust"), { unit_of_measurement: "mph" }),
         "sensor.ws_max_gust": sensor("sensor.ws_max_gust", 18.0, { unit_of_measurement: "mph" }),
-        "sensor.ws_wind_direction": sensor("sensor.ws_wind_direction", "SE", {}),
+        "sensor.ws_wind_direction": sensor("sensor.ws_wind_direction", 135, { unit_of_measurement: "°" }),
         "sensor.ws_precipitation_intensity": sensor("sensor.ws_precipitation_intensity", 0, { unit_of_measurement: "in/h" }),
         "sensor.ws_daily_rain": sensor("sensor.ws_daily_rain", 0.24, { unit_of_measurement: "in" }),
         "sensor.ws_event_rain": sensor("sensor.ws_event_rain", 0.24, { unit_of_measurement: "in" }),
         "sensor.ws_weekly_rain": sensor("sensor.ws_weekly_rain", 0.61, { unit_of_measurement: "in" }),
         "sensor.ws_monthly_rain": sensor("sensor.ws_monthly_rain", 1.42, { unit_of_measurement: "in" }),
         "sensor.ws_yearly_rain": sensor("sensor.ws_yearly_rain", 9.8, { unit_of_measurement: "in" }),
-        "sensor.ws_last_rain": sensor("sensor.ws_last_rain", new Date(now - 5 * 3600 * 1000).toISOString(), { device_class: "timestamp" }),
-        "sensor.ws_uv_index": sensor("sensor.ws_uv_index", 4, {}),
+        "sensor.ws_last_rain": sensor("sensor.ws_last_rain", new Date(now - 30 * HOUR).toISOString(), { device_class: "timestamp" }),
+        "sensor.ws_uv_index": sensor("sensor.ws_uv_index", val("sensor.ws_uv_index", 0), {}),
         "sensor.ws_irradiance": sensor("sensor.ws_irradiance", 420, { unit_of_measurement: "W/m²" }),
         "sensor.ws_solar_rad_lx": sensor("sensor.ws_solar_rad_lx", 18000, { unit_of_measurement: "lx" }),
-        "sensor.ws_relative_pressure": sensor("sensor.ws_relative_pressure", 30.05, { unit_of_measurement: "inHg" }),
+        "sensor.ws_relative_pressure": sensor("sensor.ws_relative_pressure", val("sensor.ws_relative_pressure", 2), { unit_of_measurement: "inHg" }),
         "sensor.ws_absolute_pressure": sensor("sensor.ws_absolute_pressure", 29.72, { unit_of_measurement: "inHg" }),
-        "sensor.ws_indoor_temperature": sensor("sensor.ws_indoor_temperature", 72.5, { unit_of_measurement: "°F" }),
+        "sensor.ws_indoor_temperature": sensor("sensor.ws_indoor_temperature", val("sensor.ws_indoor_temperature"), { unit_of_measurement: "°F" }),
         "sensor.ws_indoor_humidity": sensor("sensor.ws_indoor_humidity", 38, { unit_of_measurement: "%" }),
-        "sensor.ws_co2": sensor("sensor.ws_co2", 640, { unit_of_measurement: "ppm" }),
-        "sensor.ws_pm25": sensor("sensor.ws_pm25", 18, { unit_of_measurement: "µg/m³" }),
+        "sensor.ws_co2": sensor("sensor.ws_co2", val("sensor.ws_co2", 0), { unit_of_measurement: "ppm" }),
+        "sensor.ws_pm25": sensor("sensor.ws_pm25", val("sensor.ws_pm25", 0), { unit_of_measurement: "µg/m³" }),
         "sensor.ws_aqi": sensor("sensor.ws_aqi", 42, {}),
-        "sensor.ws_voc": sensor("sensor.ws_voc", 180, { unit_of_measurement: "ppb" }),
-        "sensor.ws_noise": sensor("sensor.ws_noise", 48, { unit_of_measurement: "dB" }),
-        "sensor.ws_leaf_wetness": sensor("sensor.ws_leaf_wetness", 12, { unit_of_measurement: "%" }),
-        "sensor.ws_soil_moisture_1": sensor("sensor.ws_soil_moisture_1", 42, { unit_of_measurement: "%" }),
+        "sensor.ws_leaf_wetness": sensor("sensor.ws_leaf_wetness", "unavailable", { unit_of_measurement: "%" }),
+        "sensor.ws_soil_moisture_1": sensor("sensor.ws_soil_moisture_1", val("sensor.ws_soil_moisture_1", 0), { unit_of_measurement: "%" }),
         "sensor.ws_soil_moisture_2": sensor("sensor.ws_soil_moisture_2", 28, { unit_of_measurement: "%" }),
         "sensor.ws_soil_temperature_1": sensor("sensor.ws_soil_temperature_1", 64, { unit_of_measurement: "°F" }),
         "sensor.ws_lightning_num": sensor("sensor.ws_lightning_num", 3, { unit_of_measurement: "strikes" }),
         "sensor.ws_lightning": sensor("sensor.ws_lightning", 8, { unit_of_measurement: "mi" }),
         "sensor.ws_lightning_time": sensor("sensor.ws_lightning_time", new Date(now - 40 * 60 * 1000).toISOString(), {}),
+        "sensor.ws_wh65_battery": sensor("sensor.ws_wh65_battery", 80, { unit_of_measurement: "%", device_class: "battery", friendly_name: "WS Outdoor array battery" }),
+        "sensor.ws_soil_moisture_2_battery": sensor("sensor.ws_soil_moisture_2_battery", 12, { unit_of_measurement: "%", device_class: "battery", friendly_name: "WS Lawn probe battery" }),
+        "sensor.ws_wh57_battery": sensor("sensor.ws_wh57_battery", 100, { unit_of_measurement: "%", device_class: "battery", friendly_name: "WS Lightning battery" }),
         "sensor.moon_phase": sensor("sensor.moon_phase", "waning_gibbous", {}),
-        "binary_sensor.ws_battery": {
-          entity_id: "binary_sensor.ws_battery",
-          state: "off",
-          last_updated: fresh,
-          last_changed: fresh,
-          attributes: { device_class: "battery" },
-        },
+        "binary_sensor.ws_battery": { ...sensor("binary_sensor.ws_battery", "off", { device_class: "battery" }) },
         "sun.sun": {
-          entity_id: "sun.sun",
-          state: "above_horizon",
-          last_updated: fresh,
-          last_changed: fresh,
-          attributes: {
-            next_rising: new Date(now + 12 * 3600 * 1000).toISOString(),
-            next_setting: new Date(now + 5 * 3600 * 1000).toISOString(),
-          },
+          ...sensor("sun.sun", "above_horizon", {
+            next_rising: new Date(now + 12 * HOUR).toISOString(),
+            next_setting: new Date(now + 5 * HOUR).toISOString(),
+          }),
         },
         "weather.home": {
-          entity_id: "weather.home",
-          state: "partlycloudy",
-          last_updated: fresh,
-          last_changed: fresh,
-          attributes: {
+          ...sensor("weather.home", "partlycloudy", {
             temperature: 71,
             temperature_unit: "°F",
             forecast: daily,
-            alerts: [
-              {
-                title: "Wind Advisory",
-                severity: "moderate",
-                description: "Gusty afternoon winds 25–35 mph possible through evening.",
-              },
-            ],
-          },
+            alerts: [{ title: "Wind Advisory", severity: "moderate", description: "Gusty afternoon winds 25–35 mph possible through evening." }],
+          }),
         },
-      };
-
-      const rainRateHist = Array.from({ length: 24 }, (_, i) => ({
-        s: String(i % 7 === 0 ? 0.35 : i % 5 === 0 ? 0.12 : 0),
-        lu: (now - (23 - i) * 3600 * 1000) / 1000,
-      }));
-      const historyPayload = {
-        "sensor.ws_temperature": histSeries(71, 8),
-        "sensor.ws_humidity": histSeries(46, 12),
-        "sensor.ws_wind_speed": histSeries(6, 3),
-        "sensor.ws_wind_gust": histSeries(12, 5),
-        "sensor.ws_relative_pressure": histSeries(30.05, 0.08),
-        "sensor.ws_wind_direction": dirHist,
-        "sensor.ws_precipitation_intensity": rainRateHist,
-        "sensor.ws_daily_rain": histSeries(0.3, 0.4),
       };
 
       return {
         states,
-        locale: { language: "en" },
+        language,
+        locale: { language, number_format: "language" },
         callService() {},
         connection: {
           async subscribeMessage(cb, msg) {
@@ -229,33 +299,31 @@
             return () => {};
           },
           async sendMessagePromise(msg) {
+            const start = new Date(msg.start_time).getTime();
+            const end = new Date(msg.end_time).getTime();
             if (msg.type === "history/history_during_period") {
               const out = {};
               for (const id of msg.entity_ids || []) {
-                if (historyPayload[id]) out[id] = historyPayload[id];
+                if (id === "sensor.ws_wind_direction") {
+                  out[id] = Array.from({ length: 48 }, (_, i) => ({ s: dirs[i % dirs.length], lu: (end - i * 30 * 60 * 1000) / 1000 }));
+                } else {
+                  out[id] = historyFor(id, start, end);
+                }
               }
               return out;
             }
-            if (msg.service === "get_forecasts") {
-              const type = msg.service_data?.type;
-              return {
-                response: {
-                  "weather.home": { forecast: type === "hourly" ? hourly : daily },
-                },
-              };
+            if (msg.type === "recorder/statistics_during_period") {
+              const out = {};
+              for (const id of msg.statistic_ids || []) out[id] = statsFor(id, start, end, msg.period);
+              return out;
             }
-            return { response: { "weather.home": { forecast: daily } } };
+            if (msg.service === "get_forecasts") {
+              return { response: { "weather.home": { forecast: msg.service_data?.type === "hourly" ? hourly : daily } } };
+            }
+            return {};
           },
         },
       };
-    }
-
-    function mount(hostId, config, hass) {
-      const el = document.createElement("mushroom-weather-station-card");
-      el.setConfig(config);
-      el.hass = hass;
-      document.getElementById(hostId).appendChild(el);
-      return el;
     }
 
     const base = {
@@ -266,13 +334,7 @@
       unit_system: "imperial",
       show_forecast: true,
       show_hourly_forecast: true,
-      show_history_sparklines: true,
-      show_wind_rose: true,
-      show_alerts: true,
-      show_precip_timeline: true,
-      show_records: true,
-      show_comfort: true,
-      seasonal_skins: true,
+      graph_popup: true,
       records_period: "month",
       weather_entity: "weather.home",
       sun_entity: "sun.sun",
@@ -280,20 +342,50 @@
       forecast_days: 5,
       hourly_forecast_hours: 12,
       rain_month_normal: 2.5,
-      show_updated: true,
       show_beaufort: true,
-      stale_minutes: 30,
       labels: { soil_moisture_1: "Raised bed", soil_moisture_2: "Lawn" },
-      section_order: [
-        "conditions", "rain", "wind", "sun", "soil",
-        "lightning", "air", "station", "records", "comfort", "forecast", "battery",
-      ],
     };
 
-    const hass = buildHass();
-    mount("full", base, hass);
-    mount("chips", { ...base, name: "Glance chips", layout: "chips" }, hass);
-    mount("compact", { ...base, name: "Compact", layout: "compact", show_beaufort: false }, hass);
+    const params = new URLSearchParams(location.search);
+    const state = {
+      lang: params.get("lang") || "en",
+      units: params.get("units") || "imperial",
+      theme: params.get("theme") || "dark",
+    };
+    document.getElementById("lang").value = state.lang;
+    document.getElementById("units").value = state.units;
+    document.getElementById("theme").value = state.theme;
+
+    const cards = {};
+    function mountAll() {
+      document.documentElement.dataset.theme = state.theme;
+      document.documentElement.lang = state.lang;
+      const hass = buildHass(state.lang);
+      const configs = {
+        full: { ...base, unit_system: state.units },
+        chips: { ...base, unit_system: state.units, name: "Glance chips", layout: "chips" },
+        compact: { ...base, unit_system: state.units, name: "Compact", layout: "compact", show_beaufort: false, section_order: ["conditions", "wind", "rain", "health", "records"] },
+      };
+      for (const [id, cfg] of Object.entries(configs)) {
+        let el = cards[id];
+        if (!el) {
+          el = cards[id] = document.createElement("mushroom-weather-station-card");
+          document.getElementById(id).appendChild(el);
+        }
+        el.setConfig(cfg);
+        el.hass = hass;
+      }
+      window.__demo = { cards, hass };
+    }
+    for (const key of ["lang", "units", "theme"]) {
+      document.getElementById(key).addEventListener("change", (ev) => {
+        state[key] = ev.target.value;
+        const qs = new URLSearchParams(state);
+        history.replaceState(null, "", `?${qs}`);
+        mountAll();
+      });
+    }
+    mountAll();
   </script>
 </body>
 </html>

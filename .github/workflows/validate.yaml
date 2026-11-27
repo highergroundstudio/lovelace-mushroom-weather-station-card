@@ -15,3 +15,39 @@ jobs:
         uses: hacs/action@main
         with:
           category: plugin
+
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Type-check and build
+        run: npm run build
+
+      # HACS ships the committed dist/ files, so a stale build means users get
+      # old JavaScript even though the source changed.
+      - name: Check committed dist/ matches the source
+        run: |
+          if ! git diff --quiet -- dist/; then
+            echo "::error title=Stale dist::dist/ does not match a fresh build. Run 'npm run build' and commit dist/."
+            git --no-pager diff --stat -- dist/
+            exit 1
+          fi
+          untracked=$(git ls-files --others --exclude-standard -- dist/)
+          if [[ -n "$untracked" ]]; then
+            echo "::error title=Uncommitted dist files::$untracked"
+            exit 1
+          fi

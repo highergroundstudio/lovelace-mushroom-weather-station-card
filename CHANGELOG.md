@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0 — 2026-11-27
+
+Correctness, accessibility, and reach.
+
+- **Record book uses long-term statistics** — month/year extremes now come from `recorder/statistics_during_period`, so they are no longer silently limited to the recorder's 10-day raw-history window. Sensors without statistics fall back to raw history and the card says so
+- **No more full re-render** — updates patch the DOM in place (keyed morphing + event delegation), so the card no longer flickers, loses keyboard focus, or restarts hover/transition states on every sensor tick
+- **Graph popup** — tap a tile (`graph_popup: true` or `action: graph`) for a 24h / 7d / 30d chart with min–max band, pointer and arrow-key readout, min/avg/max
+- **Station health section** — offline and silent sensors, auto-discovered transmitter batteries (`battery_entities` to override), optional `signal_strength` slot
+- **Calculated values** — feels-like (NWS wind chill / heat index) and dew point (Magnus) when the station has no sensor (`derive_missing`)
+- **Translations** — en, de, fr, es, nl; follows HA language and number format, `language` override
+- **Accessibility** — labelled tiles, charts and progress bars, keyboard-operable compass/rose/forecast, focus rings, modal dialog focus handling, reduced motion
+- **Editor previews** — visual layout picker, live record-window and seasonal-skin previews, comfort-band diagram, language picker
+- **Fixes** — rain month vs normal compared mm against inches in metric; lightning distance and precipitation peak were not unit-converted; Beaufort used km/h as mph in metric; hourly forecast strip could widen the card
+- **Project** — sections split into `src/sections/`, CI runs tests + build and fails on a stale `dist/`, GitHub Pages demo, real screenshots and GIF, 36 tests
+
 ## 0.8.0 — 2026-11-21
 
 Insight surfaces for history and atmosphere.

@@ -72,25 +72,12 @@ const DEFAULT_SECTION_ORDER = [
   "lightning",
   "air",
   "station",
+  "health",
   "records",
   "comfort",
   "forecast",
   "battery"
 ];
-const SECTION_LABELS = {
-  conditions: "Conditions",
-  wind: "Wind",
-  rain: "Rain",
-  sun: "Sun & moon",
-  soil: "Soil",
-  lightning: "Lightning",
-  air: "Air quality",
-  station: "Station",
-  records: "Record book",
-  comfort: "Comfort",
-  forecast: "Forecast",
-  battery: "Battery"
-};
 const DEFAULT_COMFORT = {
   tempMin: 65,
   tempMax: 78,
@@ -188,6 +175,41 @@ const ALERT_SEVERITY_COLOR = {
   minor: "blue",
   unknown: "grey"
 };
+const GRAPH_KEYS = /* @__PURE__ */ new Set([
+  "temperature",
+  "feels_like",
+  "humidity",
+  "dew_point",
+  "temp_high",
+  "temp_low",
+  "wind_speed",
+  "wind_gust",
+  "max_gust",
+  "rain_rate",
+  "rain_today",
+  "rain_event",
+  "rain_week",
+  "rain_month",
+  "rain_year",
+  "uv",
+  "irradiance",
+  "illuminance",
+  "pressure",
+  "pressure_abs",
+  "indoor_temperature",
+  "indoor_humidity",
+  "co2",
+  "pm25",
+  "aqi",
+  "voc",
+  "noise",
+  "leaf_wetness",
+  "lightning_count",
+  "lightning_distance",
+  "signal_strength",
+  ...Array.from({ length: 8 }, (_, i) => `soil_moisture_${i + 1}`),
+  ...Array.from({ length: 8 }, (_, i) => `soil_temperature_${i + 1}`)
+]);
 const HISTORY_SPARK_KEYS = ["temperature", "humidity", "wind_speed", "pressure"];
 [
   { key: "temperature", label: "Temperature", domains: ["sensor"], classes: ["temperature"] },
@@ -235,7 +257,8 @@ const HISTORY_SPARK_KEYS = ["temperature", "humidity", "wind_speed", "pressure"]
   { key: "lightning_count", label: "Lightning strikes", domains: ["sensor"], classes: [] },
   { key: "lightning_distance", label: "Lightning distance", domains: ["sensor"], classes: ["distance"] },
   { key: "lightning_time", label: "Last lightning", domains: ["sensor"], classes: ["timestamp"] },
-  { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] }
+  { key: "battery", label: "Battery", domains: ["sensor", "binary_sensor"], classes: ["battery"] },
+  { key: "signal_strength", label: "Signal strength", domains: ["sensor"], classes: ["signal_strength"] }
 ];
 function degToCardinal(deg) {
   const n = Number(deg);
@@ -265,9 +288,24 @@ function parseWindDirection(st) {
   if (CARDINALS.includes(card)) return { deg: cardinalToDeg(card), card };
   return { deg: null, card: null };
 }
-function fmtNum(n, digits = 1) {
-  if (n == null) return "—";
-  return Number(n).toFixed(digits).replace(/\.0$/, "");
+let numberLocale;
+function setNumberLocale(locale) {
+  numberLocale = locale || void 0;
+}
+function fmtNum(n, digits = 1, locale = numberLocale) {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  const fixed = Number(n).toFixed(digits).replace(/\.0$/, "");
+  if (!locale || locale.startsWith("en")) return fixed;
+  try {
+    const decimals = fixed.includes(".") ? fixed.split(".")[1].length : 0;
+    return new Intl.NumberFormat(locale, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+      useGrouping: false
+    }).format(Number(fixed));
+  } catch {
+    return fixed;
+  }
 }
 function colorFromThresholds(value, rules, fallback = "grey") {
   if (value == null || !rules || !rules.length) return fallback;
@@ -283,19 +321,19 @@ function iconColorVar(colorName) {
   return COLOR_VARS[colorName] || colorName;
 }
 function uvMeta(uv, color) {
-  if (uv == null) return { label: "—", color: color || "grey" };
-  if (uv >= 11) return { label: "Extreme", color: color || "purple" };
-  if (uv >= 8) return { label: "Very high", color: color || "purple" };
-  if (uv >= 6) return { label: "High", color: color || "orange" };
-  if (uv >= 3) return { label: "Moderate", color: color || "amber" };
-  return { label: "Low", color: color || "green" };
+  if (uv == null) return { label: "—", color: color || "grey", key: "tile.uv" };
+  if (uv >= 11) return { label: "Extreme", color: color || "purple", key: "uv.extreme" };
+  if (uv >= 8) return { label: "Very high", color: color || "purple", key: "uv.very_high" };
+  if (uv >= 6) return { label: "High", color: color || "orange", key: "uv.high" };
+  if (uv >= 3) return { label: "Moderate", color: color || "amber", key: "uv.moderate" };
+  return { label: "Low", color: color || "green", key: "uv.low" };
 }
 function pm25Meta(value, color) {
-  if (value == null) return { label: "PM2.5", color: color || "grey" };
-  if (value >= 55) return { label: "Unhealthy", color: color || "red" };
-  if (value >= 35) return { label: "Sensitive", color: color || "orange" };
-  if (value >= 12) return { label: "Moderate", color: color || "amber" };
-  return { label: "Good", color: color || "green" };
+  if (value == null) return { label: "PM2.5", color: color || "grey", key: "tile.pm25" };
+  if (value >= 55) return { label: "Unhealthy", color: color || "red", key: "air.unhealthy" };
+  if (value >= 35) return { label: "Sensitive", color: color || "orange", key: "air.sensitive" };
+  if (value >= 12) return { label: "Moderate", color: color || "amber", key: "air.moderate" };
+  return { label: "Good", color: color || "green", key: "air.good" };
 }
 function beaufort(mph) {
   if (mph == null) return null;
@@ -360,12 +398,12 @@ function relativeTime(date, locale) {
   if (abs < 86400 * 60) return rtf.format(Math.round(diffSec / (86400 * 7)), "week");
   return rtf.format(Math.round(diffSec / (86400 * 30)), "month");
 }
-function formatLastRain(st, hass) {
+function formatLastRain(st, hass, localeOverride) {
   const raw = st?.state;
   if (!raw || raw === "unknown" || raw === "unavailable") return "—";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return String(raw);
-  const locale = hass?.locale?.language || void 0;
+  const locale = localeOverride || hass?.locale?.language || void 0;
   try {
     return relativeTime(date, locale);
   } catch {
@@ -389,11 +427,26 @@ function batteryInfo(st, threshold) {
     return {
       low: low2,
       text: low2 ? `Low Battery · ${pct}` : `Station battery ${pct}`,
-      icon: low2 ? "mdi:battery-alert" : "mdi:battery"
+      icon: low2 ? "mdi:battery-alert" : batteryLevelIcon(n),
+      key: low2 ? "battery.low_pct" : "battery.pct",
+      pct,
+      level: n
     };
   }
   const low = st.state === "on";
-  return { low, text: low ? "Low Battery" : "Station battery OK", icon: low ? "mdi:battery-alert" : "mdi:battery" };
+  return {
+    low,
+    text: low ? "Low Battery" : "Station battery OK",
+    icon: low ? "mdi:battery-alert" : "mdi:battery",
+    key: low ? "battery.low" : "battery.ok",
+    pct: "",
+    level: null
+  };
+}
+function batteryLevelIcon(level) {
+  if (level >= 95) return "mdi:battery";
+  const step = Math.max(10, Math.min(90, Math.round(level / 10) * 10));
+  return `mdi:battery-${step}`;
 }
 function mergeThresholds(config, key) {
   const extra = config?.thresholds?.[key];
@@ -415,12 +468,13 @@ function unitKind(unit) {
   if (["mph", "km/h", "kmh", "kph", "m/s", "m/sec"].includes(u)) return "speed";
   if (["in", "mm", "in/h", "in/hr", "mm/h", "mm/hr"].includes(u)) return u.includes("/") ? "rate" : "rain";
   if (["inhg", "hpa", "mbar", "mb"].includes(u)) return "pressure";
+  if (["mi", "km"].includes(u)) return "distance";
   return null;
 }
 function sourceSystem(unit) {
   const u = String(unit || "").toLowerCase().replace("°", "");
-  if (["f", "mph", "in", "in/h", "in/hr", "inhg"].includes(u)) return "imperial";
-  if (["c", "km/h", "kmh", "kph", "m/s", "m/sec", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb"].includes(u)) return "metric";
+  if (["f", "mph", "in", "in/h", "in/hr", "inhg", "mi"].includes(u)) return "imperial";
+  if (["c", "km/h", "kmh", "kph", "m/s", "m/sec", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb", "km"].includes(u)) return "metric";
   return null;
 }
 function convertValue(value, unit, target) {
@@ -448,27 +502,30 @@ function convertValue(value, unit, target) {
   if (kind === "rate") {
     return target === "metric" ? { value: value * 25.4, unit: "mm/h" } : { value: value / 25.4, unit: "in/h" };
   }
+  if (kind === "distance") {
+    return target === "metric" ? { value: value * 1.60934, unit: "km" } : { value: value / 1.60934, unit: "mi" };
+  }
   if (kind === "pressure") {
     return target === "metric" ? { value: value * 33.8639, unit: "hPa" } : { value: value / 33.8639, unit: "inHg" };
   }
   return { value, unit: unit || "" };
 }
 function pressureTrendMeta(current, previous) {
-  if (current == null || previous == null) return { label: "", icon: "mdi:minus", color: "grey" };
+  if (current == null || previous == null) return { label: "", icon: "mdi:minus", color: "grey", key: "" };
   const delta = current - previous;
-  if (Math.abs(delta) < 0.02) return { label: "Steady", icon: "mdi:arrow-right", color: "grey" };
-  if (delta > 0) return { label: "Rising", icon: "mdi:arrow-top-right", color: "green" };
-  return { label: "Falling", icon: "mdi:arrow-bottom-right", color: "orange" };
+  if (Math.abs(delta) < 0.02) return { label: "Steady", icon: "mdi:arrow-right", color: "grey", key: "trend.steady" };
+  if (delta > 0) return { label: "Rising", icon: "mdi:arrow-top-right", color: "green", key: "trend.rising" };
+  return { label: "Falling", icon: "mdi:arrow-bottom-right", color: "orange", key: "trend.falling" };
 }
 function normalizeSectionOrder(order) {
   const known = new Set(DEFAULT_SECTION_ORDER);
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   if (Array.isArray(order)) {
-    for (const item of order) {
-      if (typeof item === "string" && known.has(item) && !seen.has(item)) {
-        out.push(item);
-        seen.add(item);
+    for (const item2 of order) {
+      if (typeof item2 === "string" && known.has(item2) && !seen.has(item2)) {
+        out.push(item2);
+        seen.add(item2);
       }
     }
   }
@@ -492,17 +549,19 @@ function thresholdCompareValue(raw, unit) {
   return raw;
 }
 function aqiMeta(value, color) {
-  if (value == null) return { label: "AQI", color: color || "grey" };
-  if (value >= 150) return { label: "Unhealthy", color: color || "red" };
-  if (value >= 100) return { label: "Sensitive", color: color || "orange" };
-  if (value >= 50) return { label: "Moderate", color: color || "amber" };
-  return { label: "Good", color: color || "green" };
+  if (value == null) return { label: "AQI", color: color || "grey", key: "tile.aqi" };
+  if (value >= 150) return { label: "Unhealthy", color: color || "red", key: "air.unhealthy" };
+  if (value >= 100) return { label: "Sensitive", color: color || "orange", key: "air.sensitive" };
+  if (value >= 50) return { label: "Moderate", color: color || "amber", key: "air.moderate" };
+  return { label: "Good", color: color || "green", key: "air.good" };
 }
+const MOON_KEY_ALIASES = { new: "new_moon", full: "full_moon", third_quarter: "last_quarter" };
 function moonMeta(state) {
   const raw = String(state || "").trim().toLowerCase().replace(/\s+/g, "_");
   const icon = MOON_ICONS[raw] || "mdi:moon-waning-crescent";
   const label = raw ? raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Moon";
-  return { label, icon };
+  const phase = MOON_KEY_ALIASES[raw] || raw;
+  return { label, icon, key: phase && MOON_ICONS[phase] ? `moon.${phase}` : "moon.label" };
 }
 function daysSinceTimestamp(raw) {
   if (!raw || raw === "unknown" || raw === "unavailable") return null;
@@ -844,6 +903,2108 @@ function seasonalSkinClasses(season, condition) {
   else if (cond.includes("cloud") || cond.includes("fog")) condClass = "cond-cloud";
   return `skin-${season}${condClass ? ` ${condClass}` : ""}`;
 }
+function parseHistoryPoint(rawState, changed) {
+  const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
+  if (!Number.isFinite(t)) return null;
+  if (typeof rawState === "string") {
+    const low = rawState.toLowerCase();
+    if (low === "unavailable" || low === "unknown") {
+      return { state: Number.NaN, last_changed: t, unavailable: true };
+    }
+  }
+  let state = num(rawState);
+  if (state == null && typeof rawState === "string") {
+    state = parseWindDirection({ state: rawState }).deg;
+  }
+  return state == null ? null : { state, last_changed: t };
+}
+function ingestHistoryRaw(raw, keyById) {
+  const next = {};
+  if (Array.isArray(raw)) {
+    for (const series of raw) {
+      if (!Array.isArray(series) || !series.length) continue;
+      const key = keyById[series[0]?.entity_id || ""];
+      if (!key) continue;
+      next[key] = series.map((p) => parseHistoryPoint(p.state, p.last_changed)).filter((p) => !!p);
+    }
+  } else if (raw && typeof raw === "object") {
+    for (const [id, series] of Object.entries(raw)) {
+      const key = keyById[id];
+      if (!key || !Array.isArray(series)) continue;
+      next[key] = series.map((p) => parseHistoryPoint(p.s ?? p.state, p.lu ?? p.last_changed)).filter((p) => !!p);
+    }
+  }
+  return next;
+}
+async function fetchHistoryRaw(hass, entityIds, start, end, significantOnly) {
+  if (!hass || !entityIds.length) return null;
+  if (hass.connection?.sendMessagePromise) {
+    return hass.connection.sendMessagePromise({
+      type: "history/history_during_period",
+      start_time: start.toISOString(),
+      end_time: end.toISOString(),
+      significant_changes_only: significantOnly,
+      minimal_response: true,
+      no_attributes: true,
+      entity_ids: entityIds
+    });
+  }
+  if (hass.callApi) {
+    const sig = significantOnly ? 1 : 0;
+    const q = `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=${sig}&minimal_response`;
+    return hass.callApi("GET", q);
+  }
+  return null;
+}
+function toMs(v) {
+  if (typeof v === "number") return v > 1e12 ? v : v * 1e3;
+  if (typeof v === "string") return new Date(v).getTime();
+  return NaN;
+}
+const finiteOrNull = (v) => {
+  const n = typeof v === "number" ? v : v == null ? NaN : Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+function parseStatistics(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [id, rows] of Object.entries(raw)) {
+    if (!Array.isArray(rows)) continue;
+    const parsed = [];
+    for (const r of rows) {
+      const start = toMs(r.start);
+      if (!Number.isFinite(start)) continue;
+      const endMs = toMs(r.end);
+      parsed.push({
+        start,
+        end: Number.isFinite(endMs) ? endMs : start,
+        min: finiteOrNull(r.min),
+        max: finiteOrNull(r.max),
+        mean: finiteOrNull(r.mean),
+        state: finiteOrNull(r.state)
+      });
+    }
+    out[id] = parsed.sort((a, b) => a.start - b.start);
+  }
+  return out;
+}
+async function fetchStatistics(hass, statisticIds, start, end, period) {
+  if (!hass?.connection?.sendMessagePromise || !statisticIds.length) return null;
+  const raw = await hass.connection.sendMessagePromise({
+    type: "recorder/statistics_during_period",
+    start_time: start.toISOString(),
+    end_time: end.toISOString(),
+    statistic_ids: statisticIds,
+    period,
+    types: ["min", "max", "mean", "state"]
+  });
+  return parseStatistics(raw);
+}
+function rowExtreme(rows, mode) {
+  let best = null;
+  for (const r of rows) {
+    const v = mode === "max" ? r.max ?? r.state ?? r.mean : r.min ?? r.state ?? r.mean;
+    if (v == null) continue;
+    if (!best || (mode === "max" ? v > best.value : v < best.value)) {
+      best = { value: v, at: r.start + Math.max(0, r.end - r.start) / 2 };
+    }
+  }
+  return best;
+}
+function pickExtreme(a, b, mode) {
+  if (!a) return b;
+  if (!b) return a;
+  if (mode === "max") return b.value > a.value ? b : a;
+  return b.value < a.value ? b : a;
+}
+function recordBookFromStatistics(stats, recent = {}) {
+  return {
+    hottest: pickExtreme(rowExtreme(stats.temperature || [], "max"), recent.hottest ?? null, "max"),
+    coldest: pickExtreme(rowExtreme(stats.temperature || [], "min"), recent.coldest ?? null, "min"),
+    peakGust: pickExtreme(rowExtreme(stats.wind_gust || [], "max"), recent.peakGust ?? null, "max"),
+    peakRainRate: pickExtreme(rowExtreme(stats.rain_rate || [], "max"), recent.peakRainRate ?? null, "max"),
+    wettestDay: pickExtreme(rowExtreme(stats.rain_today || [], "max"), recent.wettestDay ?? null, "max")
+  };
+}
+function seriesFromStatistics(rows) {
+  return {
+    source: "statistics",
+    points: rows.map((r) => {
+      const v = r.mean ?? (r.min != null && r.max != null ? (r.min + r.max) / 2 : r.max ?? r.min ?? r.state);
+      if (v == null) return null;
+      if (r.min == null && r.max == null) return { t: r.start, v };
+      return { t: r.start, v, min: r.min ?? v, max: r.max ?? v };
+    }).filter((p) => !!p)
+  };
+}
+function seriesFromHistory(points) {
+  return {
+    source: "history",
+    points: points.filter((p) => !p.unavailable && Number.isFinite(p.state)).map((p) => ({ t: p.last_changed, v: p.state }))
+  };
+}
+const fToC = (f) => (f - 32) * (5 / 9);
+const cToF = (c) => c * (9 / 5) + 32;
+function dewPointF(tempF, rh) {
+  if (tempF == null || rh == null || !Number.isFinite(tempF) || !Number.isFinite(rh)) return null;
+  if (rh <= 0 || rh > 100) return null;
+  const a = 17.625;
+  const b = 243.04;
+  const t = fToC(tempF);
+  const gamma = Math.log(rh / 100) + a * t / (b + t);
+  return cToF(b * gamma / (a - gamma));
+}
+function heatIndexF(tempF, rh) {
+  if (tempF == null || rh == null || !Number.isFinite(tempF) || !Number.isFinite(rh)) return null;
+  const T = tempF;
+  const R = Math.max(0, Math.min(100, rh));
+  const simple = 0.5 * (T + 61 + (T - 68) * 1.2 + R * 0.094);
+  if ((simple + T) / 2 < 80) return simple;
+  let hi = -42.379 + 2.04901523 * T + 10.14333127 * R - 0.22475541 * T * R - 683783e-8 * T * T - 0.05481717 * R * R + 122874e-8 * T * T * R + 85282e-8 * T * R * R - 199e-8 * T * T * R * R;
+  if (R < 13 && T >= 80 && T <= 112) {
+    hi -= (13 - R) / 4 * Math.sqrt((17 - Math.abs(T - 95)) / 17);
+  } else if (R > 85 && T >= 80 && T <= 87) {
+    hi += (R - 85) / 10 * ((87 - T) / 5);
+  }
+  return hi;
+}
+function windChillF(tempF, windMph) {
+  if (tempF == null || windMph == null || !Number.isFinite(tempF) || !Number.isFinite(windMph)) return null;
+  if (tempF > 50 || windMph <= 3) return null;
+  const v = Math.pow(windMph, 0.16);
+  return 35.74 + 0.6215 * tempF - 35.75 * v + 0.4275 * tempF * v;
+}
+function feelsLikeF(tempF, rh, windMph) {
+  if (tempF == null || !Number.isFinite(tempF)) return null;
+  const chill = windChillF(tempF, windMph);
+  if (chill != null) return chill;
+  if (tempF >= 80 && rh != null) {
+    const hi = heatIndexF(tempF, rh);
+    if (hi != null) return Math.max(hi, tempF);
+  }
+  return tempF;
+}
+function fromFahrenheit(valueF, unit) {
+  return /c$/i.test(String(unit).replace("°", "").trim()) ? fToC(valueF) : valueF;
+}
+function toFahrenheit(value, unit) {
+  return /c$/i.test(String(unit).replace("°", "").trim()) ? cToF(value) : value;
+}
+function toMph(value, unit) {
+  const u = String(unit).toLowerCase().trim();
+  if (u === "km/h" || u === "kmh" || u === "kph") return value / 1.60934;
+  if (u === "m/s" || u === "m/sec") return value * 2.23694;
+  if (u === "kn" || u === "kt" || u === "knots") return value * 1.15078;
+  return value;
+}
+const GRAPH_W = 320;
+const GRAPH_H = 140;
+const PAD_Y = 8;
+function graphStats(series) {
+  const pts = series.points;
+  if (!pts.length) return null;
+  let min = Infinity;
+  let max = -Infinity;
+  let sum = 0;
+  for (const p of pts) {
+    min = Math.min(min, p.min ?? p.v);
+    max = Math.max(max, p.max ?? p.v);
+    sum += p.v;
+  }
+  return { min, max, avg: sum / pts.length, start: pts[0].t, end: pts[pts.length - 1].t };
+}
+function gapThreshold(times) {
+  if (times.length < 3) return Infinity;
+  const deltas = [];
+  for (let i = 1; i < times.length; i++) deltas.push(times[i] - times[i - 1]);
+  deltas.sort((a, b) => a - b);
+  const median = deltas[Math.floor(deltas.length / 2)] || 0;
+  return Math.max(median * 6, 3 * 36e5);
+}
+function graphSvg(series, window2, width = GRAPH_W, height = GRAPH_H) {
+  const stats = graphStats(series);
+  if (!stats) return "";
+  const pts = series.points;
+  const span = Math.max(1, window2.end - window2.start);
+  const lo = stats.min;
+  const hi = stats.max;
+  const range = hi - lo || Math.max(1, Math.abs(hi) * 0.05);
+  const x = (t) => (t - window2.start) / span * width;
+  const y = (v) => height - PAD_Y - (v - lo) / range * (height - PAD_Y * 2);
+  const gap = gapThreshold(pts.map((p) => p.t));
+  const stepped = series.source === "history";
+  let line = "";
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const broken = i === 0 || p.t - pts[i - 1].t > gap;
+    if (broken) line += `M${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
+    else if (stepped) line += `H${x(p.t).toFixed(1)}V${y(p.v).toFixed(1)}`;
+    else line += `L${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
+  }
+  if (stepped && pts.length) line += `H${x(Math.min(window2.end, Date.now())).toFixed(1)}`;
+  let band = "";
+  if (pts.some((p) => p.min != null && p.max != null && p.max !== p.min)) {
+    let run = [];
+    const flush = () => {
+      if (run.length > 1) {
+        const top = run.map((p) => `${x(p.t).toFixed(1)},${y(p.max ?? p.v).toFixed(1)}`);
+        const bottom = run.slice().reverse().map((p) => `${x(p.t).toFixed(1)},${y(p.min ?? p.v).toFixed(1)}`);
+        band += `<polygon class="graph-band" points="${[...top, ...bottom].join(" ")}"/>`;
+      }
+      run = [];
+    };
+    for (let i = 0; i < pts.length; i++) {
+      if (i > 0 && pts[i].t - pts[i - 1].t > gap) flush();
+      run.push(pts[i]);
+    }
+    flush();
+  }
+  const grid = [0.25, 0.5, 0.75].map((f) => `<line class="graph-grid" x1="0" x2="${width}" y1="${(PAD_Y + f * (height - PAD_Y * 2)).toFixed(1)}" y2="${(PAD_Y + f * (height - PAD_Y * 2)).toFixed(1)}"/>`).join("");
+  return `<svg class="graph-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" width="100%" height="${height}" aria-hidden="true" focusable="false">
+    ${grid}
+    ${band}
+    <path class="graph-line" d="${line}"/>
+    <line class="graph-cursor" x1="-10" x2="-10" y1="0" y2="${height}"/>
+    <circle class="graph-dot" cx="-10" cy="-10" r="3.5"/>
+  </svg>`;
+}
+function nearestPoint(series, window2, fraction) {
+  const pts = series.points;
+  if (!pts.length) return -1;
+  const t = window2.start + Math.max(0, Math.min(1, fraction)) * (window2.end - window2.start);
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo < hi) {
+    const mid = lo + hi >> 1;
+    if (pts[mid].t < t) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo > 0 && Math.abs(pts[lo - 1].t - t) < Math.abs(pts[lo].t - t)) lo -= 1;
+  return lo;
+}
+const de = {
+  "section.conditions": "Bedingungen",
+  "section.wind": "Wind",
+  "section.rain": "Regen",
+  "section.sun": "Sonne & Mond",
+  "section.soil": "Boden",
+  "section.lightning": "Blitze",
+  "section.air": "Luftqualität",
+  "section.station": "Station",
+  "section.health": "Stationszustand",
+  "section.records": "Rekorde",
+  "section.comfort": "Komfort",
+  "section.forecast": "Vorhersage",
+  "section.battery": "Batterie",
+  "tile.temperature": "Außen",
+  "tile.feels_like": "Gefühlt",
+  "tile.temp_high": "Max",
+  "tile.temp_low": "Min",
+  "tile.humidity": "Luftfeuchte",
+  "tile.dew_point": "Taupunkt",
+  "tile.wind_speed": "Wind",
+  "tile.wind_speed_bf": "Wind · B{n}",
+  "tile.wind_gust": "Böe",
+  "tile.max_gust": "Max. Böe",
+  "tile.rain_rate": "Rate",
+  "tile.rain_today": "Heute",
+  "tile.rain_event": "Ereignis",
+  "tile.rain_week": "Woche",
+  "tile.rain_month": "Monat",
+  "tile.rain_year": "Jahr",
+  "tile.last_rain": "Letzter Regen",
+  "tile.uv": "UV",
+  "tile.irradiance": "Solar",
+  "tile.illuminance": "Licht",
+  "tile.sunrise": "Sonnenaufgang",
+  "tile.sunset": "Sonnenuntergang",
+  "tile.soil_moisture": "Boden {n}",
+  "tile.soil_temperature": "Boden {n} °",
+  "tile.leaf_wetness": "Blattnässe",
+  "tile.lightning_count": "Einschläge",
+  "tile.lightning_distance": "Entfernung",
+  "tile.lightning_time": "Letzter Blitz",
+  "tile.noise": "Lärm",
+  "tile.pressure": "Luftdruck",
+  "tile.pressure_trend": "Luftdruck · {trend}",
+  "tile.pressure_abs": "Abs. Druck",
+  "tile.indoor_temperature": "Innen",
+  "tile.indoor_humidity": "Innen rF",
+  "tile.signal_strength": "Signal",
+  "derived.suffix": "{label} · ber.",
+  "derived.title": "Berechnet aus Temperatur, Luftfeuchte und Wind",
+  "uv.low": "Niedrig",
+  "uv.moderate": "Mäßig",
+  "uv.high": "Hoch",
+  "uv.very_high": "Sehr hoch",
+  "uv.extreme": "Extrem",
+  "air.good": "Gut",
+  "air.moderate": "Mäßig",
+  "air.sensitive": "Empfindlich",
+  "air.unhealthy": "Ungesund",
+  "trend.rising": "Steigend",
+  "trend.steady": "Stabil",
+  "trend.falling": "Fallend",
+  "moon.label": "Mond",
+  "moon.new_moon": "Neumond",
+  "moon.waxing_crescent": "Zunehmende Sichel",
+  "moon.first_quarter": "Erstes Viertel",
+  "moon.waxing_gibbous": "Zunehmender Mond",
+  "moon.full_moon": "Vollmond",
+  "moon.waning_gibbous": "Abnehmender Mond",
+  "moon.last_quarter": "Letztes Viertel",
+  "moon.waning_crescent": "Abnehmende Sichel",
+  "battery.low": "Batterie schwach",
+  "battery.low_pct": "Batterie schwach · {pct}",
+  "battery.ok": "Stationsbatterie OK",
+  "battery.pct": "Stationsbatterie {pct}",
+  "header.live": "Live-Station",
+  "header.raining": "Regen · {rate}",
+  "header.hilo": "H {hi}° / T {lo}°",
+  "header.feels": "Gefühlt {v}°",
+  "header.rh": "{v}% rF",
+  "status.stale": "Veraltet · {when}",
+  "status.stale_title": "Daten sind möglicherweise veraltet",
+  "status.updated_title": "Letzte Sensoraktualisierung",
+  "hint.setup": "{prefix} setzen (z. B. {example}) oder Entitäten im Karteneditor wählen.",
+  "chips.more": "Mehr",
+  "chips.less": "Weniger",
+  "chips.region": "Wetter-Überblick",
+  "forecast.pick_entity": "Wetter-Entität für die Vorhersage wählen.",
+  "forecast.missing": "Wetter-Entität {id} fehlt.",
+  "forecast.waiting": "Warte auf Tagesvorhersage von {id}…",
+  "forecast.hourly_region": "Stündliche Vorhersage",
+  "forecast.daily_region": "Tägliche Vorhersage",
+  "forecast.item_aria": "{when}: {temp}, {pop} Niederschlagswahrscheinlichkeit",
+  "rain.month_vs_normal": "Monat vs. Normal",
+  "rain.pct_normal": "{pct}% vom Normal",
+  "rain.days_since": "Tage seit Regen",
+  "rain.since_one": "{n} Tag seit Regen",
+  "rain.since_other": "{n} Tage seit Regen",
+  "rain.spark_today": "H",
+  "rain.spark_event": "E",
+  "rain.spark_week": "W",
+  "rain.spark_month": "M",
+  "rain.spark_year": "J",
+  "rain.spark_aria": "Regensummen: heute {today}, Ereignis {event}, Woche {week}, Monat {month}, Jahr {year}",
+  "precip.title": "Niederschlagsverlauf",
+  "precip.meta": "{hours} h · Spitze {peak}",
+  "precip.aria": "Regenrate der letzten {hours} Stunden, Spitze {peak}",
+  "wind.rose": "{hours}-h-Rose",
+  "wind.compass_aria": "Wind aus {dir} bei {deg}°",
+  "wind.compass_none": "Windrichtung nicht verfügbar",
+  "wind.rose_aria": "Windrichtungsverteilung der letzten {hours} Stunden. Am häufigsten: {dir}",
+  "records.month": "Monat",
+  "records.year": "Jahr",
+  "records.hottest": "Am heißesten · {period}",
+  "records.coldest": "Am kältesten · {period}",
+  "records.peak_gust": "Stärkste Böe · {period}",
+  "records.peak_rate": "Max. Regenrate · {period}",
+  "records.wettest": "Nassester Tag · {period}",
+  "records.set_today": "Heute",
+  "records.empty": "Rekorde benötigen Verlauf für Temperatur-, Böen- oder Regensensoren ({period}).",
+  "records.title": "Extremwerte · {period}",
+  "records.source_stats": "Langzeitstatistik",
+  "records.source_history": "Nur jüngster Verlauf — state_class an den Sensoren ergänzen",
+  "comfort.title": "Stunden im Komfortbereich",
+  "comfort.meta": "{in} h von {total} h im Bereich · {band}",
+  "comfort.empty": "Komfortzonen benötigen Temperatur- und Feuchteverlauf.",
+  "comfort.cooler": "Kühler",
+  "comfort.temp_axis": "Temp →",
+  "comfort.warmer": "Wärmer",
+  "comfort.aria": "{pct} der erfassten Zeit lag im Komfortbereich",
+  "alerts.default": "Wetterwarnung",
+  "alerts.region": "Wetterwarnungen",
+  "health.all_ok": "Alle {total} Sensoren melden",
+  "health.reporting": "{ok} von {total} Sensoren melden",
+  "health.offline": "Offline",
+  "health.stale": "Still {when}",
+  "health.batteries": "Batterien",
+  "health.battery_low": "schwach",
+  "health.battery_ok": "OK",
+  "health.signal": "Signal",
+  "graph.title": "Verlauf: {name}",
+  "graph.range_24h": "24 h",
+  "graph.range_7d": "7 T",
+  "graph.range_30d": "30 T",
+  "graph.range_label": "Zeitraum",
+  "graph.loading": "Lädt…",
+  "graph.empty": "Kein Verlauf für diesen Zeitraum.",
+  "graph.min": "Min",
+  "graph.max": "Max",
+  "graph.avg": "Mittel",
+  "graph.more_info": "Details",
+  "graph.close": "Schließen",
+  "graph.summary": "Minimum {min}, Maximum {max}, Mittel {avg}.",
+  "graph.source_stats": "Stündliche Statistik (Min–Max-Band, Mittelwert)",
+  "graph.source_history": "Aufgezeichnete Zustände",
+  "editor.loading": "Home-Assistant-Auswahl wird geladen…",
+  "editor.tab_layout": "Layout",
+  "editor.tab_entities": "Entitäten",
+  "editor.tab_order": "Reihenfolge",
+  "editor.tab_display": "Anzeige",
+  "editor.name": "Name",
+  "editor.layout": "Layout",
+  "editor.layout_full": "Volle Station",
+  "editor.layout_compact": "Kompakt",
+  "editor.layout_chips": "Chip-Leiste",
+  "editor.prefix": "Entitätspräfix",
+  "editor.unit_system": "Einheitensystem",
+  "editor.unit_native": "Nativ (wie gemeldet)",
+  "editor.unit_imperial": "Imperial (°F, mph, in)",
+  "editor.unit_metric": "Metrisch (°C, km/h, mm)",
+  "editor.language": "Sprache",
+  "editor.language_auto": "Wie Home Assistant",
+  "editor.forecast_days": "Vorhersagetage",
+  "editor.hourly_hours": "Stunden (stündlich)",
+  "editor.stale_minutes": "Veraltet nach (Minuten)",
+  "editor.history_hours": "Verlaufsfenster (Stunden)",
+  "editor.records_period": "Rekordzeitraum",
+  "editor.records_month": "Monat (30 Tage)",
+  "editor.records_year": "Jahr (365 Tage)",
+  "editor.hemisphere": "Hemisphäre (Jahreszeiten-Skins)",
+  "editor.hemisphere_north": "Nord",
+  "editor.hemisphere_south": "Süd",
+  "editor.rain_normal": "Normaler Monatsregen",
+  "editor.weather_entity": "Wetter-Entität für Vorhersage",
+  "editor.alert_entity": "Warn-Entität (optional)",
+  "editor.sun_entity": "Sonnen-Entität",
+  "editor.moon_entity": "Mond-Entität (optional)",
+  "editor.sections": "Abschnitte",
+  "editor.comfort_band": "Komfortbereich",
+  "editor.order_reset": "Standardreihenfolge",
+  "editor.custom_label": "Eigene Beschriftung",
+  "editor.custom_unit": "Eigene Einheit",
+  "editor.sw_tablet": "Tablet-Modus",
+  "editor.sw_graph": "Diagramm-Popup",
+  "editor.sw_derive": "Fehlende Werte berechnen",
+  "editor.sw_daily": "Tagesvorhersage",
+  "editor.sw_hourly": "Stündliche Vorhersage",
+  "editor.sw_sparks": "Verlaufs-Sparklines",
+  "editor.sw_rose": "Windrose",
+  "editor.sw_alerts": "Wetterwarnungen",
+  "editor.sw_precip": "Niederschlagsverlauf",
+  "editor.sw_records": "Rekorde",
+  "editor.sw_comfort": "Komfortzonen",
+  "editor.sw_skins": "Jahreszeiten-Skins",
+  "editor.sw_updated": "Letzte Aktualisierung",
+  "editor.sw_beaufort": "Beaufort-Skala"
+};
+const en = {
+  // Sections
+  "section.conditions": "Conditions",
+  "section.wind": "Wind",
+  "section.rain": "Rain",
+  "section.sun": "Sun & moon",
+  "section.soil": "Soil",
+  "section.lightning": "Lightning",
+  "section.air": "Air quality",
+  "section.station": "Station",
+  "section.health": "Station health",
+  "section.records": "Record book",
+  "section.comfort": "Comfort",
+  "section.forecast": "Forecast",
+  "section.battery": "Battery",
+  // Tiles
+  "tile.temperature": "Outdoor",
+  "tile.feels_like": "Feels like",
+  "tile.temp_high": "High",
+  "tile.temp_low": "Low",
+  "tile.humidity": "Humidity",
+  "tile.dew_point": "Dew point",
+  "tile.wind_speed": "Speed",
+  "tile.wind_speed_bf": "Speed · B{n}",
+  "tile.wind_gust": "Gust",
+  "tile.max_gust": "Max gust",
+  "tile.rain_rate": "Rate",
+  "tile.rain_today": "Today",
+  "tile.rain_event": "Event",
+  "tile.rain_week": "Week",
+  "tile.rain_month": "Month",
+  "tile.rain_year": "Year",
+  "tile.last_rain": "Last rain",
+  "tile.uv": "UV",
+  "tile.irradiance": "Solar",
+  "tile.illuminance": "Light",
+  "tile.sunrise": "Sunrise",
+  "tile.sunset": "Sunset",
+  "tile.soil_moisture": "Soil {n}",
+  "tile.soil_temperature": "Soil {n} °",
+  "tile.leaf_wetness": "Leaf wet",
+  "tile.lightning_count": "Strikes",
+  "tile.lightning_distance": "Distance",
+  "tile.lightning_time": "Last strike",
+  "tile.pm25": "PM2.5",
+  "tile.aqi": "AQI",
+  "tile.voc": "VOC",
+  "tile.noise": "Noise",
+  "tile.pressure": "Pressure",
+  "tile.pressure_trend": "Pressure · {trend}",
+  "tile.pressure_abs": "Abs pressure",
+  "tile.indoor_temperature": "Indoor",
+  "tile.indoor_humidity": "Indoor RH",
+  "tile.co2": "CO₂",
+  "tile.signal_strength": "Signal",
+  "derived.suffix": "{label} · calc",
+  "derived.title": "Calculated from temperature, humidity and wind",
+  // Meta labels
+  "uv.low": "Low",
+  "uv.moderate": "Moderate",
+  "uv.high": "High",
+  "uv.very_high": "Very high",
+  "uv.extreme": "Extreme",
+  "air.good": "Good",
+  "air.moderate": "Moderate",
+  "air.sensitive": "Sensitive",
+  "air.unhealthy": "Unhealthy",
+  "trend.rising": "Rising",
+  "trend.steady": "Steady",
+  "trend.falling": "Falling",
+  "moon.label": "Moon",
+  "moon.new_moon": "New moon",
+  "moon.waxing_crescent": "Waxing crescent",
+  "moon.first_quarter": "First quarter",
+  "moon.waxing_gibbous": "Waxing gibbous",
+  "moon.full_moon": "Full moon",
+  "moon.waning_gibbous": "Waning gibbous",
+  "moon.last_quarter": "Last quarter",
+  "moon.waning_crescent": "Waning crescent",
+  "battery.low": "Low battery",
+  "battery.low_pct": "Low battery · {pct}",
+  "battery.ok": "Station battery OK",
+  "battery.pct": "Station battery {pct}",
+  // Header / status
+  "header.live": "Live station",
+  "header.raining": "Raining · {rate}",
+  "header.hilo": "H {hi}° / L {lo}°",
+  "header.feels": "Feels {v}°",
+  "header.rh": "{v}% RH",
+  "status.stale": "Stale · {when}",
+  "status.stale_title": "Data may be stale",
+  "status.updated_title": "Last sensor update",
+  "hint.setup": "Set {prefix} (e.g. {example}) or pick entities in the card editor.",
+  "chips.more": "More",
+  "chips.less": "Less",
+  "chips.region": "Weather glance",
+  // Forecast
+  "forecast.pick_entity": "Pick a weather entity for forecast.",
+  "forecast.missing": "Weather entity {id} is missing.",
+  "forecast.waiting": "Waiting for daily forecast from {id}…",
+  "forecast.hourly_region": "Hourly forecast",
+  "forecast.daily_region": "Daily forecast",
+  "forecast.item_aria": "{when}: {temp}, {pop} chance of precipitation",
+  // Rain
+  "rain.month_vs_normal": "Month vs normal",
+  "rain.pct_normal": "{pct}% of normal",
+  "rain.days_since": "Days since rain",
+  "rain.since_one": "{n} day since rain",
+  "rain.since_other": "{n} days since rain",
+  "rain.spark_today": "T",
+  "rain.spark_event": "E",
+  "rain.spark_week": "W",
+  "rain.spark_month": "M",
+  "rain.spark_year": "Y",
+  "rain.spark_aria": "Rain totals: today {today}, event {event}, week {week}, month {month}, year {year}",
+  "precip.title": "Precipitation timeline",
+  "precip.meta": "{hours}h · peak {peak}",
+  "precip.aria": "Rain rate over the last {hours} hours, peak {peak}",
+  // Wind
+  "wind.rose": "{hours}h rose",
+  "wind.compass_aria": "Wind from {dir} at {deg}°",
+  "wind.compass_none": "Wind direction unavailable",
+  "wind.rose_aria": "Wind direction distribution over the last {hours} hours. Most common: {dir}",
+  // Records
+  "records.month": "Month",
+  "records.year": "Year",
+  "records.hottest": "Hottest · {period}",
+  "records.coldest": "Coldest · {period}",
+  "records.peak_gust": "Peak gust · {period}",
+  "records.peak_rate": "Peak rain rate · {period}",
+  "records.wettest": "Wettest day · {period}",
+  "records.set_today": "Set today",
+  "records.empty": "Record book needs history for temperature, gust, or rain sensors ({period} window).",
+  "records.title": "{period} extremes",
+  "records.source_stats": "Long-term statistics",
+  "records.source_history": "Recent history only — add state_class to sensors for full records",
+  // Comfort
+  "comfort.title": "Hours in comfort",
+  "comfort.meta": "{in}h of {total}h in band · {band}",
+  "comfort.empty": "Comfort zones need temperature and humidity history.",
+  "comfort.cooler": "Cooler",
+  "comfort.temp_axis": "Temp →",
+  "comfort.warmer": "Warmer",
+  "comfort.aria": "{pct} of the tracked time was inside the comfort band",
+  // Alerts
+  "alerts.default": "Weather alert",
+  "alerts.region": "Weather alerts",
+  // Station health
+  "health.all_ok": "All {total} sensors reporting",
+  "health.reporting": "{ok} of {total} sensors reporting",
+  "health.offline": "Offline",
+  "health.stale": "Quiet {when}",
+  "health.batteries": "Batteries",
+  "health.battery_low": "low",
+  "health.battery_ok": "OK",
+  "health.signal": "Signal",
+  // Graph popup
+  "graph.title": "{name} history",
+  "graph.range_24h": "24h",
+  "graph.range_7d": "7d",
+  "graph.range_30d": "30d",
+  "graph.range_label": "History range",
+  "graph.loading": "Loading…",
+  "graph.empty": "No history available for this range.",
+  "graph.min": "Min",
+  "graph.max": "Max",
+  "graph.avg": "Avg",
+  "graph.more_info": "More info",
+  "graph.close": "Close",
+  "graph.summary": "Minimum {min}, maximum {max}, average {avg}.",
+  "graph.source_stats": "Hourly statistics (min–max band, mean line)",
+  "graph.source_history": "Recorded states",
+  // Editor
+  "editor.loading": "Loading Home Assistant pickers…",
+  "editor.tab_layout": "Layout",
+  "editor.tab_entities": "Entities",
+  "editor.tab_order": "Order",
+  "editor.tab_display": "Display",
+  "editor.name": "Name",
+  "editor.layout": "Layout",
+  "editor.layout_full": "Full station",
+  "editor.layout_compact": "Compact",
+  "editor.layout_chips": "Chips glance bar",
+  "editor.layout_full_help": "Hero, every section, forecast",
+  "editor.layout_compact_help": "Denser tiles, no section titles",
+  "editor.layout_chips_help": "One-line glance, tap to expand",
+  "editor.prefix": "Entity prefix",
+  "editor.unit_system": "Unit system",
+  "editor.unit_native": "Native (as reported)",
+  "editor.unit_imperial": "Imperial (°F, mph, in)",
+  "editor.unit_metric": "Metric (°C, km/h, mm)",
+  "editor.language": "Language",
+  "editor.language_auto": "Follow Home Assistant",
+  "editor.forecast_days": "Forecast days",
+  "editor.hourly_hours": "Hourly hours",
+  "editor.stale_minutes": "Stale after (minutes)",
+  "editor.history_hours": "History window (hours)",
+  "editor.records_period": "Record book period",
+  "editor.records_month": "Month (30 days)",
+  "editor.records_year": "Year (365 days)",
+  "editor.records_preview": "Covers {start} – {end}. Uses long-term statistics, so it is not limited by recorder purge_keep_days.",
+  "editor.hemisphere": "Hemisphere (seasonal skins)",
+  "editor.hemisphere_north": "Northern",
+  "editor.hemisphere_south": "Southern",
+  "editor.skin_preview": "Today the card uses the {season} skin.",
+  "editor.skin_off": "Seasonal skins are off.",
+  "editor.season_spring": "spring",
+  "editor.season_summer": "summer",
+  "editor.season_autumn": "autumn",
+  "editor.season_winter": "winter",
+  "editor.rain_normal": "Rain month normal",
+  "editor.weather_entity": "Forecast weather entity",
+  "editor.alert_entity": "Alert entity (optional)",
+  "editor.sun_entity": "Sun entity",
+  "editor.moon_entity": "Moon entity (optional)",
+  "editor.sections": "Sections",
+  "editor.sections_help": "Off = show the section when it has data. On = hide it even if sensors exist.",
+  "editor.battery_threshold": "Battery warning threshold",
+  "editor.uv_purple": "UV purple at / above",
+  "editor.temp_blue": "Temperature blue at / below ({unit})",
+  "editor.comfort_band": "Comfort band",
+  "editor.comfort_help": "Outdoor comfort hours use this temp×humidity window. Temperatures follow the selected unit system; humidity is %RH.",
+  "editor.comfort_temp_min": "Comfort temp min ({unit})",
+  "editor.comfort_temp_max": "Comfort temp max ({unit})",
+  "editor.comfort_hum_min": "Comfort humidity min (%)",
+  "editor.comfort_hum_max": "Comfort humidity max (%)",
+  "editor.comfort_preview_aria": "Comfort band preview: {band}",
+  "editor.thresholds_help": "Threshold cutoffs follow the selected unit system ({system}). Stored rules stay compatible with imperial defaults. Per-slot labels and units are under Entities.",
+  "editor.order_help": "Drag sections to reorder, or use ↑ / ↓. Hidden sections stay listed but do not render.",
+  "editor.order_reset": "Reset to default order",
+  "editor.move_up": "Move {name} up",
+  "editor.move_down": "Move {name} down",
+  "editor.entities_help": "Prefix auto-fills empty slots. Pickers override one sensor at a time.",
+  "editor.picker_missing": "Entity picker did not load. Reload Lovelace resources.",
+  "editor.custom_label": "Custom label",
+  "editor.custom_unit": "Custom unit",
+  "editor.battery_entities": "Extra battery entities (comma separated)",
+  "editor.battery_entities_help": "Leave empty to auto-detect battery sensors that share the prefix.",
+  "editor.sw_tablet": "Tablet mode",
+  "editor.sw_tablet_help": "Tap does nothing. Hold a tile for more-info.",
+  "editor.sw_graph": "Graph popup",
+  "editor.sw_graph_help": "Tap a sensor tile for a 24h / 7d / 30d history chart.",
+  "editor.sw_derive": "Calculate missing values",
+  "editor.sw_derive_help": "Feels-like and dew point from temperature, humidity and wind when the station has no sensor.",
+  "editor.sw_empty": "Show empty tiles",
+  "editor.sw_empty_help": "Keep tiles visible when the entity is missing.",
+  "editor.sw_daily": "Show daily forecast",
+  "editor.sw_daily_help": "Needs a weather entity below.",
+  "editor.sw_hourly": "Show hourly forecast",
+  "editor.sw_hourly_help": "12–24h strip with precip % and temp.",
+  "editor.sw_sparks": "History sparklines",
+  "editor.sw_sparks_help": "Mini charts on temp, humidity, wind, pressure.",
+  "editor.sw_rose": "Wind rose",
+  "editor.sw_rose_help": "Direction distribution from history.",
+  "editor.sw_alerts": "Weather alerts banner",
+  "editor.sw_alerts_help": "From weather attributes or alert entity.",
+  "editor.sw_precip": "Precipitation timeline",
+  "editor.sw_precip_help": "Hourly rain-rate intensity bars in the rain section.",
+  "editor.sw_records": "Record book",
+  "editor.sw_records_help": "Month/year extremes from long-term statistics.",
+  "editor.sw_comfort": "Comfort zones",
+  "editor.sw_comfort_help": "Hours in temp×humidity comfort band + scatter.",
+  "editor.sw_skins": "Seasonal skins",
+  "editor.sw_skins_help": "Accent the card by season and weather condition.",
+  "editor.sw_updated": "Show last updated",
+  "editor.sw_updated_help": "Status chip with relative update time.",
+  "editor.sw_beaufort": "Show Beaufort scale",
+  "editor.sw_beaufort_help": "Add Beaufort number on the wind speed tile.",
+  "editor.hide_conditions": "Hide conditions",
+  "editor.hide_conditions_help": "Outdoor, feels like, high / low, humidity, dew point",
+  "editor.hide_wind": "Hide wind",
+  "editor.hide_wind_help": "Compass, rose, speed, gust, max gust",
+  "editor.hide_rain": "Hide rain",
+  "editor.hide_rain_help": "Goals, timeline, sparkline, and rain totals",
+  "editor.hide_sun": "Hide sun & moon",
+  "editor.hide_sun_help": "UV, solar, light, sunrise/sunset, moon",
+  "editor.hide_soil": "Hide soil",
+  "editor.hide_soil_help": "Moisture/temp channels 1–8 and leaf wetness",
+  "editor.hide_lightning": "Hide lightning",
+  "editor.hide_lightning_help": "Strike count, distance, last strike",
+  "editor.hide_air": "Hide air quality",
+  "editor.hide_air_help": "PM2.5, AQI, VOC, noise",
+  "editor.hide_more": "Hide station extras",
+  "editor.hide_more_help": "Pressure, indoor, CO₂",
+  "editor.hide_health": "Hide station health",
+  "editor.hide_health_help": "Offline sensors, battery list, signal",
+  "editor.hide_records": "Hide record book",
+  "editor.hide_records_help": "Month/year extremes grid",
+  "editor.hide_comfort": "Hide comfort zones",
+  "editor.hide_comfort_help": "Comfort hours and scatter",
+  "editor.hide_battery": "Hide battery",
+  "editor.hide_battery_help": "Status line at the bottom"
+};
+const es = {
+  "section.conditions": "Condiciones",
+  "section.wind": "Viento",
+  "section.rain": "Lluvia",
+  "section.sun": "Sol y luna",
+  "section.soil": "Suelo",
+  "section.lightning": "Rayos",
+  "section.air": "Calidad del aire",
+  "section.station": "Estación",
+  "section.health": "Estado de la estación",
+  "section.records": "Récords",
+  "section.comfort": "Confort",
+  "section.forecast": "Pronóstico",
+  "section.battery": "Batería",
+  "tile.temperature": "Exterior",
+  "tile.feels_like": "Sensación",
+  "tile.temp_high": "Máx",
+  "tile.temp_low": "Mín",
+  "tile.humidity": "Humedad",
+  "tile.dew_point": "Punto de rocío",
+  "tile.wind_speed": "Velocidad",
+  "tile.wind_speed_bf": "Velocidad · B{n}",
+  "tile.wind_gust": "Ráfaga",
+  "tile.max_gust": "Ráfaga máx",
+  "tile.rain_rate": "Intensidad",
+  "tile.rain_today": "Hoy",
+  "tile.rain_event": "Evento",
+  "tile.rain_week": "Semana",
+  "tile.rain_month": "Mes",
+  "tile.rain_year": "Año",
+  "tile.last_rain": "Última lluvia",
+  "tile.uv": "UV",
+  "tile.irradiance": "Solar",
+  "tile.illuminance": "Luz",
+  "tile.sunrise": "Amanecer",
+  "tile.sunset": "Atardecer",
+  "tile.soil_moisture": "Suelo {n}",
+  "tile.soil_temperature": "Suelo {n} °",
+  "tile.leaf_wetness": "Humedad hoja",
+  "tile.lightning_count": "Rayos",
+  "tile.lightning_distance": "Distancia",
+  "tile.lightning_time": "Último rayo",
+  "tile.voc": "COV",
+  "tile.noise": "Ruido",
+  "tile.pressure": "Presión",
+  "tile.pressure_trend": "Presión · {trend}",
+  "tile.pressure_abs": "Presión abs.",
+  "tile.indoor_temperature": "Interior",
+  "tile.indoor_humidity": "HR interior",
+  "tile.signal_strength": "Señal",
+  "derived.suffix": "{label} · calc.",
+  "derived.title": "Calculado a partir de temperatura, humedad y viento",
+  "uv.low": "Bajo",
+  "uv.moderate": "Moderado",
+  "uv.high": "Alto",
+  "uv.very_high": "Muy alto",
+  "uv.extreme": "Extremo",
+  "air.good": "Buena",
+  "air.moderate": "Moderada",
+  "air.sensitive": "Sensibles",
+  "air.unhealthy": "Mala",
+  "trend.rising": "Subiendo",
+  "trend.steady": "Estable",
+  "trend.falling": "Bajando",
+  "moon.label": "Luna",
+  "moon.new_moon": "Luna nueva",
+  "moon.waxing_crescent": "Creciente",
+  "moon.first_quarter": "Cuarto creciente",
+  "moon.waxing_gibbous": "Gibosa creciente",
+  "moon.full_moon": "Luna llena",
+  "moon.waning_gibbous": "Gibosa menguante",
+  "moon.last_quarter": "Cuarto menguante",
+  "moon.waning_crescent": "Menguante",
+  "battery.low": "Batería baja",
+  "battery.low_pct": "Batería baja · {pct}",
+  "battery.ok": "Batería de la estación OK",
+  "battery.pct": "Batería de la estación {pct}",
+  "header.live": "Estación en vivo",
+  "header.raining": "Lloviendo · {rate}",
+  "header.hilo": "Máx {hi}° / Mín {lo}°",
+  "header.feels": "Sensación {v}°",
+  "header.rh": "{v}% HR",
+  "status.stale": "Antiguo · {when}",
+  "status.stale_title": "Los datos pueden estar desactualizados",
+  "status.updated_title": "Última actualización",
+  "hint.setup": "Define {prefix} (p. ej. {example}) o elige entidades en el editor.",
+  "chips.more": "Más",
+  "chips.less": "Menos",
+  "chips.region": "Resumen del tiempo",
+  "forecast.pick_entity": "Elige una entidad meteorológica para el pronóstico.",
+  "forecast.missing": "Falta la entidad meteorológica {id}.",
+  "forecast.waiting": "Esperando el pronóstico diario de {id}…",
+  "forecast.hourly_region": "Pronóstico por horas",
+  "forecast.daily_region": "Pronóstico diario",
+  "forecast.item_aria": "{when}: {temp}, {pop} de probabilidad de precipitación",
+  "rain.month_vs_normal": "Mes vs normal",
+  "rain.pct_normal": "{pct}% de lo normal",
+  "rain.days_since": "Días sin lluvia",
+  "rain.since_one": "{n} día sin lluvia",
+  "rain.since_other": "{n} días sin lluvia",
+  "rain.spark_today": "H",
+  "rain.spark_event": "E",
+  "rain.spark_week": "S",
+  "rain.spark_month": "M",
+  "rain.spark_year": "A",
+  "rain.spark_aria": "Acumulados: hoy {today}, evento {event}, semana {week}, mes {month}, año {year}",
+  "precip.title": "Cronología de precipitación",
+  "precip.meta": "{hours} h · pico {peak}",
+  "precip.aria": "Intensidad de lluvia en las últimas {hours} horas, pico {peak}",
+  "wind.rose": "Rosa {hours} h",
+  "wind.compass_aria": "Viento del {dir} a {deg}°",
+  "wind.compass_none": "Dirección del viento no disponible",
+  "wind.rose_aria": "Distribución de direcciones en las últimas {hours} horas. Más frecuente: {dir}",
+  "records.month": "Mes",
+  "records.year": "Año",
+  "records.hottest": "Más calor · {period}",
+  "records.coldest": "Más frío · {period}",
+  "records.peak_gust": "Ráfaga máx · {period}",
+  "records.peak_rate": "Intensidad máx · {period}",
+  "records.wettest": "Día más lluvioso · {period}",
+  "records.set_today": "Hoy",
+  "records.empty": "Los récords necesitan historial de temperatura, ráfagas o lluvia ({period}).",
+  "records.title": "Extremos · {period}",
+  "records.source_stats": "Estadísticas a largo plazo",
+  "records.source_history": "Solo historial reciente — añade state_class a los sensores",
+  "comfort.title": "Horas de confort",
+  "comfort.meta": "{in} h de {total} h en la zona · {band}",
+  "comfort.empty": "Las zonas de confort necesitan historial de temperatura y humedad.",
+  "comfort.cooler": "Más fresco",
+  "comfort.temp_axis": "Temp →",
+  "comfort.warmer": "Más cálido",
+  "comfort.aria": "{pct} del tiempo registrado estuvo en la zona de confort",
+  "alerts.default": "Aviso meteorológico",
+  "alerts.region": "Avisos meteorológicos",
+  "health.all_ok": "Los {total} sensores informan",
+  "health.reporting": "{ok} de {total} sensores informan",
+  "health.offline": "Sin conexión",
+  "health.stale": "Sin datos {when}",
+  "health.batteries": "Baterías",
+  "health.battery_low": "baja",
+  "health.battery_ok": "OK",
+  "health.signal": "Señal",
+  "graph.title": "Historial: {name}",
+  "graph.range_24h": "24 h",
+  "graph.range_7d": "7 d",
+  "graph.range_30d": "30 d",
+  "graph.range_label": "Periodo",
+  "graph.loading": "Cargando…",
+  "graph.empty": "No hay historial para este periodo.",
+  "graph.min": "Mín",
+  "graph.max": "Máx",
+  "graph.avg": "Media",
+  "graph.more_info": "Detalles",
+  "graph.close": "Cerrar",
+  "graph.summary": "Mínimo {min}, máximo {max}, media {avg}.",
+  "graph.source_stats": "Estadísticas horarias (banda mín–máx, media)",
+  "graph.source_history": "Estados registrados",
+  "editor.loading": "Cargando selectores de Home Assistant…",
+  "editor.tab_layout": "Diseño",
+  "editor.tab_entities": "Entidades",
+  "editor.tab_order": "Orden",
+  "editor.tab_display": "Visualización",
+  "editor.name": "Nombre",
+  "editor.layout": "Diseño",
+  "editor.layout_full": "Estación completa",
+  "editor.layout_compact": "Compacto",
+  "editor.layout_chips": "Barra de chips",
+  "editor.prefix": "Prefijo de entidad",
+  "editor.unit_system": "Sistema de unidades",
+  "editor.unit_native": "Nativo (como llega)",
+  "editor.unit_imperial": "Imperial (°F, mph, in)",
+  "editor.unit_metric": "Métrico (°C, km/h, mm)",
+  "editor.language": "Idioma",
+  "editor.language_auto": "Igual que Home Assistant",
+  "editor.forecast_days": "Días de pronóstico",
+  "editor.hourly_hours": "Horas (por horas)",
+  "editor.stale_minutes": "Antiguo tras (minutos)",
+  "editor.history_hours": "Ventana de historial (horas)",
+  "editor.records_period": "Periodo de récords",
+  "editor.records_month": "Mes (30 días)",
+  "editor.records_year": "Año (365 días)",
+  "editor.hemisphere": "Hemisferio (temas de estación)",
+  "editor.hemisphere_north": "Norte",
+  "editor.hemisphere_south": "Sur",
+  "editor.rain_normal": "Lluvia mensual normal",
+  "editor.weather_entity": "Entidad meteorológica",
+  "editor.alert_entity": "Entidad de avisos (opcional)",
+  "editor.sun_entity": "Entidad del sol",
+  "editor.moon_entity": "Entidad de la luna (opcional)",
+  "editor.sections": "Secciones",
+  "editor.comfort_band": "Zona de confort",
+  "editor.order_reset": "Orden predeterminado",
+  "editor.custom_label": "Etiqueta propia",
+  "editor.custom_unit": "Unidad propia",
+  "editor.sw_tablet": "Modo tableta",
+  "editor.sw_graph": "Gráfico emergente",
+  "editor.sw_derive": "Calcular valores que faltan",
+  "editor.sw_daily": "Pronóstico diario",
+  "editor.sw_hourly": "Pronóstico por horas",
+  "editor.sw_sparks": "Minigráficos",
+  "editor.sw_rose": "Rosa de los vientos",
+  "editor.sw_alerts": "Avisos meteorológicos",
+  "editor.sw_precip": "Cronología de precipitación",
+  "editor.sw_records": "Récords",
+  "editor.sw_comfort": "Zonas de confort",
+  "editor.sw_skins": "Temas de estación",
+  "editor.sw_updated": "Última actualización",
+  "editor.sw_beaufort": "Escala de Beaufort"
+};
+const fr = {
+  "section.conditions": "Conditions",
+  "section.wind": "Vent",
+  "section.rain": "Pluie",
+  "section.sun": "Soleil & lune",
+  "section.soil": "Sol",
+  "section.lightning": "Foudre",
+  "section.air": "Qualité de l’air",
+  "section.station": "Station",
+  "section.health": "État de la station",
+  "section.records": "Records",
+  "section.comfort": "Confort",
+  "section.forecast": "Prévisions",
+  "section.battery": "Batterie",
+  "tile.temperature": "Extérieur",
+  "tile.feels_like": "Ressenti",
+  "tile.temp_high": "Max",
+  "tile.temp_low": "Min",
+  "tile.humidity": "Humidité",
+  "tile.dew_point": "Point de rosée",
+  "tile.wind_speed": "Vitesse",
+  "tile.wind_speed_bf": "Vitesse · B{n}",
+  "tile.wind_gust": "Rafale",
+  "tile.max_gust": "Rafale max",
+  "tile.rain_rate": "Intensité",
+  "tile.rain_today": "Aujourd’hui",
+  "tile.rain_event": "Épisode",
+  "tile.rain_week": "Semaine",
+  "tile.rain_month": "Mois",
+  "tile.rain_year": "Année",
+  "tile.last_rain": "Dernière pluie",
+  "tile.uv": "UV",
+  "tile.irradiance": "Solaire",
+  "tile.illuminance": "Lumière",
+  "tile.sunrise": "Lever",
+  "tile.sunset": "Coucher",
+  "tile.soil_moisture": "Sol {n}",
+  "tile.soil_temperature": "Sol {n} °",
+  "tile.leaf_wetness": "Humect. feuille",
+  "tile.lightning_count": "Impacts",
+  "tile.lightning_distance": "Distance",
+  "tile.lightning_time": "Dernier impact",
+  "tile.voc": "COV",
+  "tile.noise": "Bruit",
+  "tile.pressure": "Pression",
+  "tile.pressure_trend": "Pression · {trend}",
+  "tile.pressure_abs": "Pression abs.",
+  "tile.indoor_temperature": "Intérieur",
+  "tile.indoor_humidity": "HR intérieure",
+  "tile.signal_strength": "Signal",
+  "derived.suffix": "{label} · calc.",
+  "derived.title": "Calculé à partir de la température, de l’humidité et du vent",
+  "uv.low": "Faible",
+  "uv.moderate": "Modéré",
+  "uv.high": "Élevé",
+  "uv.very_high": "Très élevé",
+  "uv.extreme": "Extrême",
+  "air.good": "Bon",
+  "air.moderate": "Moyen",
+  "air.sensitive": "Sensibles",
+  "air.unhealthy": "Mauvais",
+  "trend.rising": "En hausse",
+  "trend.steady": "Stable",
+  "trend.falling": "En baisse",
+  "moon.label": "Lune",
+  "moon.new_moon": "Nouvelle lune",
+  "moon.waxing_crescent": "Premier croissant",
+  "moon.first_quarter": "Premier quartier",
+  "moon.waxing_gibbous": "Gibbeuse croissante",
+  "moon.full_moon": "Pleine lune",
+  "moon.waning_gibbous": "Gibbeuse décroissante",
+  "moon.last_quarter": "Dernier quartier",
+  "moon.waning_crescent": "Dernier croissant",
+  "battery.low": "Batterie faible",
+  "battery.low_pct": "Batterie faible · {pct}",
+  "battery.ok": "Batterie station OK",
+  "battery.pct": "Batterie station {pct}",
+  "header.live": "Station en direct",
+  "header.raining": "Pluie · {rate}",
+  "header.hilo": "Max {hi}° / Min {lo}°",
+  "header.feels": "Ressenti {v}°",
+  "header.rh": "{v}% HR",
+  "status.stale": "Ancien · {when}",
+  "status.stale_title": "Les données peuvent être anciennes",
+  "status.updated_title": "Dernière mise à jour",
+  "hint.setup": "Définissez {prefix} (ex. {example}) ou choisissez les entités dans l’éditeur.",
+  "chips.more": "Plus",
+  "chips.less": "Moins",
+  "chips.region": "Aperçu météo",
+  "forecast.pick_entity": "Choisissez une entité météo pour les prévisions.",
+  "forecast.missing": "L’entité météo {id} est introuvable.",
+  "forecast.waiting": "En attente des prévisions de {id}…",
+  "forecast.hourly_region": "Prévisions horaires",
+  "forecast.daily_region": "Prévisions quotidiennes",
+  "forecast.item_aria": "{when} : {temp}, {pop} de risque de précipitations",
+  "rain.month_vs_normal": "Mois vs normale",
+  "rain.pct_normal": "{pct}% de la normale",
+  "rain.days_since": "Jours sans pluie",
+  "rain.since_one": "{n} jour sans pluie",
+  "rain.since_other": "{n} jours sans pluie",
+  "rain.spark_today": "J",
+  "rain.spark_event": "É",
+  "rain.spark_week": "S",
+  "rain.spark_month": "M",
+  "rain.spark_year": "A",
+  "rain.spark_aria": "Cumuls : aujourd’hui {today}, épisode {event}, semaine {week}, mois {month}, année {year}",
+  "precip.title": "Chronologie des précipitations",
+  "precip.meta": "{hours} h · pic {peak}",
+  "precip.aria": "Intensité de pluie sur les {hours} dernières heures, pic {peak}",
+  "wind.rose": "Rose {hours} h",
+  "wind.compass_aria": "Vent de {dir} à {deg}°",
+  "wind.compass_none": "Direction du vent indisponible",
+  "wind.rose_aria": "Répartition des directions sur les {hours} dernières heures. La plus fréquente : {dir}",
+  "records.month": "Mois",
+  "records.year": "Année",
+  "records.hottest": "Plus chaud · {period}",
+  "records.coldest": "Plus froid · {period}",
+  "records.peak_gust": "Rafale max · {period}",
+  "records.peak_rate": "Intensité max · {period}",
+  "records.wettest": "Jour le plus humide · {period}",
+  "records.set_today": "Aujourd’hui",
+  "records.empty": "Les records nécessitent l’historique des capteurs de température, rafale ou pluie ({period}).",
+  "records.title": "Extrêmes · {period}",
+  "records.source_stats": "Statistiques long terme",
+  "records.source_history": "Historique récent seulement — ajoutez state_class aux capteurs",
+  "comfort.title": "Heures de confort",
+  "comfort.meta": "{in} h sur {total} h dans la zone · {band}",
+  "comfort.empty": "Les zones de confort nécessitent l’historique de température et d’humidité.",
+  "comfort.cooler": "Plus frais",
+  "comfort.temp_axis": "Temp →",
+  "comfort.warmer": "Plus chaud",
+  "comfort.aria": "{pct} du temps suivi était dans la zone de confort",
+  "alerts.default": "Alerte météo",
+  "alerts.region": "Alertes météo",
+  "health.all_ok": "Les {total} capteurs répondent",
+  "health.reporting": "{ok} capteurs sur {total} répondent",
+  "health.offline": "Hors ligne",
+  "health.stale": "Silencieux {when}",
+  "health.batteries": "Batteries",
+  "health.battery_low": "faible",
+  "health.battery_ok": "OK",
+  "health.signal": "Signal",
+  "graph.title": "Historique : {name}",
+  "graph.range_24h": "24 h",
+  "graph.range_7d": "7 j",
+  "graph.range_30d": "30 j",
+  "graph.range_label": "Période",
+  "graph.loading": "Chargement…",
+  "graph.empty": "Aucun historique pour cette période.",
+  "graph.min": "Min",
+  "graph.max": "Max",
+  "graph.avg": "Moy.",
+  "graph.more_info": "Détails",
+  "graph.close": "Fermer",
+  "graph.summary": "Minimum {min}, maximum {max}, moyenne {avg}.",
+  "graph.source_stats": "Statistiques horaires (bande min–max, moyenne)",
+  "graph.source_history": "États enregistrés",
+  "editor.loading": "Chargement des sélecteurs Home Assistant…",
+  "editor.tab_layout": "Disposition",
+  "editor.tab_entities": "Entités",
+  "editor.tab_order": "Ordre",
+  "editor.tab_display": "Affichage",
+  "editor.name": "Nom",
+  "editor.layout": "Disposition",
+  "editor.layout_full": "Station complète",
+  "editor.layout_compact": "Compacte",
+  "editor.layout_chips": "Barre de puces",
+  "editor.prefix": "Préfixe d’entité",
+  "editor.unit_system": "Système d’unités",
+  "editor.unit_native": "Natif (tel que reçu)",
+  "editor.unit_imperial": "Impérial (°F, mph, in)",
+  "editor.unit_metric": "Métrique (°C, km/h, mm)",
+  "editor.language": "Langue",
+  "editor.language_auto": "Comme Home Assistant",
+  "editor.forecast_days": "Jours de prévision",
+  "editor.hourly_hours": "Heures (horaire)",
+  "editor.stale_minutes": "Ancien après (minutes)",
+  "editor.history_hours": "Fenêtre d’historique (heures)",
+  "editor.records_period": "Période des records",
+  "editor.records_month": "Mois (30 jours)",
+  "editor.records_year": "Année (365 jours)",
+  "editor.hemisphere": "Hémisphère (thèmes saisonniers)",
+  "editor.hemisphere_north": "Nord",
+  "editor.hemisphere_south": "Sud",
+  "editor.rain_normal": "Normale mensuelle de pluie",
+  "editor.weather_entity": "Entité météo des prévisions",
+  "editor.alert_entity": "Entité d’alerte (optionnelle)",
+  "editor.sun_entity": "Entité soleil",
+  "editor.moon_entity": "Entité lune (optionnelle)",
+  "editor.sections": "Sections",
+  "editor.comfort_band": "Zone de confort",
+  "editor.order_reset": "Ordre par défaut",
+  "editor.custom_label": "Libellé personnalisé",
+  "editor.custom_unit": "Unité personnalisée",
+  "editor.sw_tablet": "Mode tablette",
+  "editor.sw_graph": "Graphique en popup",
+  "editor.sw_derive": "Calculer les valeurs manquantes",
+  "editor.sw_daily": "Prévisions quotidiennes",
+  "editor.sw_hourly": "Prévisions horaires",
+  "editor.sw_sparks": "Mini-graphiques",
+  "editor.sw_rose": "Rose des vents",
+  "editor.sw_alerts": "Alertes météo",
+  "editor.sw_precip": "Chronologie des précipitations",
+  "editor.sw_records": "Records",
+  "editor.sw_comfort": "Zones de confort",
+  "editor.sw_skins": "Thèmes saisonniers",
+  "editor.sw_updated": "Dernière mise à jour",
+  "editor.sw_beaufort": "Échelle de Beaufort"
+};
+const nl = {
+  "section.conditions": "Omstandigheden",
+  "section.wind": "Wind",
+  "section.rain": "Regen",
+  "section.sun": "Zon & maan",
+  "section.soil": "Bodem",
+  "section.lightning": "Bliksem",
+  "section.air": "Luchtkwaliteit",
+  "section.station": "Station",
+  "section.health": "Stationsstatus",
+  "section.records": "Records",
+  "section.comfort": "Comfort",
+  "section.forecast": "Verwachting",
+  "section.battery": "Batterij",
+  "tile.temperature": "Buiten",
+  "tile.feels_like": "Gevoel",
+  "tile.temp_high": "Max",
+  "tile.temp_low": "Min",
+  "tile.humidity": "Luchtvochtigheid",
+  "tile.dew_point": "Dauwpunt",
+  "tile.wind_speed": "Snelheid",
+  "tile.wind_speed_bf": "Snelheid · B{n}",
+  "tile.wind_gust": "Windstoot",
+  "tile.max_gust": "Max. stoot",
+  "tile.rain_rate": "Intensiteit",
+  "tile.rain_today": "Vandaag",
+  "tile.rain_event": "Bui",
+  "tile.rain_week": "Week",
+  "tile.rain_month": "Maand",
+  "tile.rain_year": "Jaar",
+  "tile.last_rain": "Laatste regen",
+  "tile.uv": "UV",
+  "tile.irradiance": "Zon",
+  "tile.illuminance": "Licht",
+  "tile.sunrise": "Zonsopkomst",
+  "tile.sunset": "Zonsondergang",
+  "tile.soil_moisture": "Bodem {n}",
+  "tile.soil_temperature": "Bodem {n} °",
+  "tile.leaf_wetness": "Bladnat",
+  "tile.lightning_count": "Inslagen",
+  "tile.lightning_distance": "Afstand",
+  "tile.lightning_time": "Laatste inslag",
+  "tile.noise": "Geluid",
+  "tile.pressure": "Luchtdruk",
+  "tile.pressure_trend": "Luchtdruk · {trend}",
+  "tile.pressure_abs": "Abs. druk",
+  "tile.indoor_temperature": "Binnen",
+  "tile.indoor_humidity": "Binnen RV",
+  "tile.signal_strength": "Signaal",
+  "derived.suffix": "{label} · ber.",
+  "derived.title": "Berekend uit temperatuur, luchtvochtigheid en wind",
+  "uv.low": "Laag",
+  "uv.moderate": "Matig",
+  "uv.high": "Hoog",
+  "uv.very_high": "Zeer hoog",
+  "uv.extreme": "Extreem",
+  "air.good": "Goed",
+  "air.moderate": "Matig",
+  "air.sensitive": "Gevoelig",
+  "air.unhealthy": "Ongezond",
+  "trend.rising": "Stijgend",
+  "trend.steady": "Stabiel",
+  "trend.falling": "Dalend",
+  "moon.label": "Maan",
+  "moon.new_moon": "Nieuwe maan",
+  "moon.waxing_crescent": "Wassende sikkel",
+  "moon.first_quarter": "Eerste kwartier",
+  "moon.waxing_gibbous": "Wassende maan",
+  "moon.full_moon": "Volle maan",
+  "moon.waning_gibbous": "Afnemende maan",
+  "moon.last_quarter": "Laatste kwartier",
+  "moon.waning_crescent": "Afnemende sikkel",
+  "battery.low": "Batterij bijna leeg",
+  "battery.low_pct": "Batterij bijna leeg · {pct}",
+  "battery.ok": "Stationsbatterij OK",
+  "battery.pct": "Stationsbatterij {pct}",
+  "header.live": "Live station",
+  "header.raining": "Regen · {rate}",
+  "header.hilo": "H {hi}° / L {lo}°",
+  "header.feels": "Gevoel {v}°",
+  "header.rh": "{v}% RV",
+  "status.stale": "Verouderd · {when}",
+  "status.stale_title": "Gegevens kunnen verouderd zijn",
+  "status.updated_title": "Laatste sensorupdate",
+  "hint.setup": "Stel {prefix} in (bv. {example}) of kies entiteiten in de editor.",
+  "chips.more": "Meer",
+  "chips.less": "Minder",
+  "chips.region": "Weeroverzicht",
+  "forecast.pick_entity": "Kies een weerentiteit voor de verwachting.",
+  "forecast.missing": "Weerentiteit {id} ontbreekt.",
+  "forecast.waiting": "Wachten op dagverwachting van {id}…",
+  "forecast.hourly_region": "Uurverwachting",
+  "forecast.daily_region": "Dagverwachting",
+  "forecast.item_aria": "{when}: {temp}, {pop} kans op neerslag",
+  "rain.month_vs_normal": "Maand vs normaal",
+  "rain.pct_normal": "{pct}% van normaal",
+  "rain.days_since": "Dagen zonder regen",
+  "rain.since_one": "{n} dag zonder regen",
+  "rain.since_other": "{n} dagen zonder regen",
+  "rain.spark_today": "V",
+  "rain.spark_event": "B",
+  "rain.spark_week": "W",
+  "rain.spark_month": "M",
+  "rain.spark_year": "J",
+  "rain.spark_aria": "Regentotalen: vandaag {today}, bui {event}, week {week}, maand {month}, jaar {year}",
+  "precip.title": "Neerslagverloop",
+  "precip.meta": "{hours} u · piek {peak}",
+  "precip.aria": "Regenintensiteit over de laatste {hours} uur, piek {peak}",
+  "wind.rose": "{hours}u-roos",
+  "wind.compass_aria": "Wind uit {dir} op {deg}°",
+  "wind.compass_none": "Windrichting niet beschikbaar",
+  "wind.rose_aria": "Verdeling windrichting over de laatste {hours} uur. Meest voorkomend: {dir}",
+  "records.month": "Maand",
+  "records.year": "Jaar",
+  "records.hottest": "Warmst · {period}",
+  "records.coldest": "Koudst · {period}",
+  "records.peak_gust": "Zwaarste stoot · {period}",
+  "records.peak_rate": "Max. regenintensiteit · {period}",
+  "records.wettest": "Natste dag · {period}",
+  "records.set_today": "Vandaag",
+  "records.empty": "Records hebben geschiedenis nodig van temperatuur-, wind- of regensensoren ({period}).",
+  "records.title": "Extremen · {period}",
+  "records.source_stats": "Langetermijnstatistieken",
+  "records.source_history": "Alleen recente geschiedenis — voeg state_class toe aan sensoren",
+  "comfort.title": "Uren in comfort",
+  "comfort.meta": "{in} u van {total} u in zone · {band}",
+  "comfort.empty": "Comfortzones hebben temperatuur- en vochtgeschiedenis nodig.",
+  "comfort.cooler": "Koeler",
+  "comfort.temp_axis": "Temp →",
+  "comfort.warmer": "Warmer",
+  "comfort.aria": "{pct} van de gemeten tijd lag in de comfortzone",
+  "alerts.default": "Weerwaarschuwing",
+  "alerts.region": "Weerwaarschuwingen",
+  "health.all_ok": "Alle {total} sensoren melden",
+  "health.reporting": "{ok} van {total} sensoren melden",
+  "health.offline": "Offline",
+  "health.stale": "Stil {when}",
+  "health.batteries": "Batterijen",
+  "health.battery_low": "laag",
+  "health.battery_ok": "OK",
+  "health.signal": "Signaal",
+  "graph.title": "Geschiedenis: {name}",
+  "graph.range_24h": "24 u",
+  "graph.range_7d": "7 d",
+  "graph.range_30d": "30 d",
+  "graph.range_label": "Periode",
+  "graph.loading": "Laden…",
+  "graph.empty": "Geen geschiedenis voor deze periode.",
+  "graph.min": "Min",
+  "graph.max": "Max",
+  "graph.avg": "Gem.",
+  "graph.more_info": "Details",
+  "graph.close": "Sluiten",
+  "graph.summary": "Minimum {min}, maximum {max}, gemiddeld {avg}.",
+  "graph.source_stats": "Uurstatistieken (min–max-band, gemiddelde)",
+  "graph.source_history": "Vastgelegde statussen",
+  "editor.loading": "Home Assistant-kiezers laden…",
+  "editor.tab_layout": "Indeling",
+  "editor.tab_entities": "Entiteiten",
+  "editor.tab_order": "Volgorde",
+  "editor.tab_display": "Weergave",
+  "editor.name": "Naam",
+  "editor.layout": "Indeling",
+  "editor.layout_full": "Volledig station",
+  "editor.layout_compact": "Compact",
+  "editor.layout_chips": "Chipbalk",
+  "editor.prefix": "Entiteitsprefix",
+  "editor.unit_system": "Eenhedenstelsel",
+  "editor.unit_native": "Origineel (zoals gemeld)",
+  "editor.unit_imperial": "Imperiaal (°F, mph, in)",
+  "editor.unit_metric": "Metrisch (°C, km/h, mm)",
+  "editor.language": "Taal",
+  "editor.language_auto": "Volg Home Assistant",
+  "editor.forecast_days": "Verwachtingsdagen",
+  "editor.hourly_hours": "Uren (per uur)",
+  "editor.stale_minutes": "Verouderd na (minuten)",
+  "editor.history_hours": "Geschiedenisvenster (uren)",
+  "editor.records_period": "Recordperiode",
+  "editor.records_month": "Maand (30 dagen)",
+  "editor.records_year": "Jaar (365 dagen)",
+  "editor.hemisphere": "Halfrond (seizoensthema's)",
+  "editor.hemisphere_north": "Noord",
+  "editor.hemisphere_south": "Zuid",
+  "editor.rain_normal": "Normale maandneerslag",
+  "editor.weather_entity": "Weerentiteit voor verwachting",
+  "editor.alert_entity": "Waarschuwingsentiteit (optioneel)",
+  "editor.sun_entity": "Zonentiteit",
+  "editor.moon_entity": "Maanentiteit (optioneel)",
+  "editor.sections": "Secties",
+  "editor.comfort_band": "Comfortzone",
+  "editor.order_reset": "Standaardvolgorde",
+  "editor.custom_label": "Eigen label",
+  "editor.custom_unit": "Eigen eenheid",
+  "editor.sw_tablet": "Tabletmodus",
+  "editor.sw_graph": "Grafiek-pop-up",
+  "editor.sw_derive": "Ontbrekende waarden berekenen",
+  "editor.sw_daily": "Dagverwachting",
+  "editor.sw_hourly": "Uurverwachting",
+  "editor.sw_sparks": "Mini-grafieken",
+  "editor.sw_rose": "Windroos",
+  "editor.sw_alerts": "Weerwaarschuwingen",
+  "editor.sw_precip": "Neerslagverloop",
+  "editor.sw_records": "Records",
+  "editor.sw_comfort": "Comfortzones",
+  "editor.sw_skins": "Seizoensthema's",
+  "editor.sw_updated": "Laatste update",
+  "editor.sw_beaufort": "Schaal van Beaufort"
+};
+const LANGS = { en, de, fr, es, nl };
+function resolveLanguage(lang) {
+  const base = String(lang || "").toLowerCase().split(/[-_]/)[0];
+  return base && LANGS[base] ? base : "en";
+}
+function fill(template, vars) {
+  if (!vars) return template;
+  return template.replace(
+    /\{(\w+)\}/g,
+    (match, name) => Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match
+  );
+}
+function translate(lang, key, vars) {
+  const table = LANGS[resolveLanguage(lang)];
+  const template = table[key] ?? en[key] ?? key;
+  return fill(template, vars);
+}
+function makeTranslator(lang) {
+  const code = resolveLanguage(lang);
+  return (key, vars) => translate(code, key, vars);
+}
+function hasKey(key) {
+  return Object.prototype.hasOwnProperty.call(en, key);
+}
+function keyOf(node) {
+  if (node.nodeType !== 1) return null;
+  const el = node;
+  const explicit = el.getAttribute("data-morph-key");
+  if (explicit) return `m:${explicit}`;
+  const section = el.getAttribute("data-section");
+  if (section) return `s:${section}`;
+  const key = el.getAttribute("data-key");
+  if (key) return `k:${el.tagName}:${key}:${el.getAttribute("data-entity") || ""}`;
+  return null;
+}
+function sameKind(a, b) {
+  if (a.nodeType !== b.nodeType) return false;
+  if (a.nodeType === 1) {
+    const ea = a;
+    const eb = b;
+    return ea.tagName === eb.tagName && ea.namespaceURI === eb.namespaceURI;
+  }
+  return true;
+}
+function syncAttributes(from, to) {
+  const next = to.attributes;
+  for (let i = 0; i < next.length; i++) {
+    const attr = next[i];
+    if (from.getAttributeNS(attr.namespaceURI, attr.localName) !== attr.value) {
+      if (attr.namespaceURI) from.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
+      else from.setAttribute(attr.name, attr.value);
+    }
+  }
+  const prev = from.attributes;
+  for (let i = prev.length - 1; i >= 0; i--) {
+    const attr = prev[i];
+    if (!to.hasAttributeNS(attr.namespaceURI, attr.localName)) {
+      from.removeAttributeNS(attr.namespaceURI, attr.localName);
+    }
+  }
+  if (from instanceof HTMLInputElement && to instanceof HTMLInputElement) {
+    if (from.value !== to.value) from.value = to.value;
+    if (from.checked !== to.checked) from.checked = to.checked;
+  }
+}
+function morphNode(from, to) {
+  if (from.nodeType === 3 || from.nodeType === 8) {
+    if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+    return;
+  }
+  if (from.nodeType !== 1) return;
+  syncAttributes(from, to);
+  if (from.tagName.includes("-")) return;
+  morphChildren(from, to);
+}
+function morphChildren(parent, next) {
+  const oldKeyed = /* @__PURE__ */ new Map();
+  for (let c = parent.firstChild; c; c = c.nextSibling) {
+    const k = keyOf(c);
+    if (k && !oldKeyed.has(k)) oldKeyed.set(k, c);
+  }
+  let cursor = parent.firstChild;
+  let incoming = next.firstChild;
+  while (incoming) {
+    const following = incoming.nextSibling;
+    const key = keyOf(incoming);
+    let match = null;
+    if (key) {
+      const candidate = oldKeyed.get(key);
+      if (candidate && sameKind(candidate, incoming)) {
+        match = candidate;
+        oldKeyed.delete(key);
+      }
+    } else if (cursor && !keyOf(cursor) && sameKind(cursor, incoming)) {
+      match = cursor;
+    }
+    if (match) {
+      if (match !== cursor) parent.insertBefore(match, cursor);
+      else cursor = cursor.nextSibling;
+      morphNode(match, incoming);
+    } else {
+      parent.insertBefore(incoming, cursor);
+    }
+    incoming = following;
+  }
+  while (cursor) {
+    const after = cursor.nextSibling;
+    parent.removeChild(cursor);
+    cursor = after;
+  }
+  for (const stale of oldKeyed.values()) {
+    if (stale.parentNode === parent) parent.removeChild(stale);
+  }
+}
+function morph(target, html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  morphChildren(target, tpl.content);
+}
+const renderAir = (v, ctx) => {
+  if (!ctx.showAir) return "";
+  const { t } = v;
+  const voc = num(ctx.voc?.state);
+  const noise = num(ctx.noise?.state);
+  const body = `<div class="grid">
+    ${v.tile("pm25", v.label("pm25", ctx.pm == null ? t("tile.pm25") : v.meta(ctx.pmm)), ctx.pm25, ctx.pm == null ? "—" : `${fmtNum(ctx.pm, 0)} ${esc(v.unitStr("pm25", ctx.pm25, unitOf(ctx.pm25) || "µg/m³"))}`, "mdi:air-filter", ctx.pmm.color)}
+    ${v.tile("aqi", v.label("aqi", ctx.aqiVal == null ? t("tile.aqi") : v.meta(ctx.aqim)), ctx.aqi, ctx.aqiVal == null ? "—" : `${fmtNum(ctx.aqiVal, 0)}`, "mdi:air-purifier", ctx.aqim.color)}
+    ${v.tile("voc", v.label("voc", t("tile.voc")), ctx.voc, voc == null ? "—" : `${fmtNum(voc, 0)} ${esc(v.unitStr("voc", ctx.voc, unitOf(ctx.voc) || "ppb"))}`, "mdi:chemical-weapon", v.color("voc", voc, "green"))}
+    ${v.tile("noise", v.label("noise", t("tile.noise")), ctx.noise, noise == null ? "—" : `${fmtNum(noise, 0)} ${esc(v.unitStr("noise", ctx.noise, unitOf(ctx.noise) || "dB"))}`, "mdi:volume-high", v.color("noise", noise, "green"))}
+  </div>`;
+  return v.wrapSection("air", ctx.compact, body);
+};
+const renderBattery = (v, ctx) => {
+  if (!ctx.showBattery || !ctx.batt || !ctx.battery) return "";
+  const text = v.t(ctx.batt.key, { pct: ctx.batt.pct });
+  const body = `<div class="battery ${ctx.batt.low ? "warn" : "ok"}" role="button" tabindex="0" data-key="battery" data-entity="${esc(ctx.battery.entity_id)}">
+    <ha-icon icon="${ctx.batt.icon}" aria-hidden="true"></ha-icon>
+    ${esc(v.label("battery", text))}
+  </div>`;
+  return v.wrapSection("battery", true, body);
+};
+const renderComfort = (v, ctx) => {
+  if (!v.wantComfort()) return "";
+  const { t } = v;
+  const band = comfortBandFromConfig(v.config);
+  const src = v.conv(v.st("temperature"), "°F").src || "°F";
+  const tempPts = (v.comfortTemp.length ? v.comfortTemp : v.history.temperature || []).map((p) => {
+    if (p.unavailable) return { state: Number.NaN, last_changed: p.last_changed, unavailable: true };
+    const cmp = thresholdCompareValue(p.state, src);
+    return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
+  }).filter((p) => !!p);
+  const humPts = v.comfortHum.length ? v.comfortHum : v.history.humidity || [];
+  const win = v.historyWindow || {
+    start: Date.now() - v.historyHours() * 36e5,
+    end: Date.now()
+  };
+  const stats = comfortStats(tempPts, humPts, band, win);
+  if (!stats.samples.length && !(stats.hoursTotal > 0)) {
+    return v.wrapSection("comfort", ctx.compact, `<div class="hint">${esc(t("comfort.empty"))}</div>`);
+  }
+  const target = v.config.unit_system || "native";
+  const lo = convertValue(band.tempMin, "°F", target);
+  const hi = convertValue(band.tempMax, "°F", target);
+  const bandLabel = `${lo.value == null ? "—" : Math.round(lo.value)}–${hi.value == null ? "—" : Math.round(hi.value)}${lo.unit || "°"} · ${band.humidityMin}–${band.humidityMax}% RH`;
+  const pct = stats.pct == null ? "—" : `${stats.pct}%`;
+  const fill2 = stats.pct == null ? 0 : Math.min(100, stats.pct);
+  const body = `<div class="comfort-panel">
+    <div class="comfort-top">
+      <div class="comfort-title">${esc(t("comfort.title"))}</div>
+      <div class="comfort-pct">${esc(pct)}</div>
+    </div>
+    <div class="comfort-track" role="progressbar" aria-label="${esc(t("comfort.title"))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${fill2}"><div class="comfort-fill" style="width:${fill2}%"></div></div>
+    <div class="comfort-meta">${esc(t("comfort.meta", { in: fmtNum(stats.hoursIn, 1), total: fmtNum(stats.hoursTotal, 1), band: bandLabel }))}</div>
+    <div role="img" aria-label="${esc(t("comfort.aria", { pct }))}">${comfortScatterSvg(stats.samples, band)}</div>
+    <div class="comfort-axes" aria-hidden="true"><span>${esc(t("comfort.cooler"))}</span><span>${esc(t("comfort.temp_axis"))}</span><span>${esc(t("comfort.warmer"))}</span></div>
+  </div>`;
+  return v.wrapSection("comfort", ctx.compact, body);
+};
+const renderConditions = (v, ctx) => {
+  if (!ctx.showConditions) return "";
+  const { t } = v;
+  const deg = ctx.tempUnit.includes("°") ? ctx.tempUnit : "°";
+  const body = `<div class="grid">
+    ${v.tile("temperature", v.label("temperature", t("tile.temperature")), ctx.temp, ctx.t.value == null ? "—" : `${fmtNum(ctx.t.value, 1)}${deg}`, "mdi:thermometer", ctx.tColor, v.histSpark("temperature"))}
+    ${v.tile("feels_like", v.label("feels_like", t("tile.feels_like")), ctx.feels, ctx.f.value == null ? "—" : `${fmtNum(ctx.f.value, 1)}°`, "mdi:sun-thermometer-outline", v.color("feels_like", ctx.f.raw, ctx.tColor, ctx.f.src), "", { derived: ctx.feelsDerived })}
+    ${v.tile("temp_high", v.label("temp_high", t("tile.temp_high")), ctx.high, ctx.hi.value == null ? "—" : `${Math.round(ctx.hi.value)}°`, "mdi:thermometer-high", "orange")}
+    ${v.tile("temp_low", v.label("temp_low", t("tile.temp_low")), ctx.low, ctx.lo.value == null ? "—" : `${Math.round(ctx.lo.value)}°`, "mdi:thermometer-low", "blue")}
+    ${v.tile("humidity", v.label("humidity", t("tile.humidity")), ctx.humidity, ctx.h == null ? "—" : `${Math.round(ctx.h)}${esc(v.unitStr("humidity", ctx.humidity, "%"))}`, "mdi:water-percent", v.color("humidity", ctx.h, "blue"), v.histSpark("humidity"))}
+    ${v.tile("dew_point", v.label("dew_point", t("tile.dew_point")), ctx.dew, ctx.d.value == null ? "—" : `${fmtNum(ctx.d.value, 1)}°`, "mdi:molecule", v.color("dew_point", ctx.d.raw, "blue", ctx.d.src), "", { derived: ctx.dewDerived })}
+  </div>`;
+  return v.wrapSection("conditions", ctx.compact, body);
+};
+function item(v, cls, id, when, f, tempUnit) {
+  const target = v.config.unit_system || "native";
+  const hi = f.temperature != null ? convertValue(f.temperature, tempUnit, target) : null;
+  const lo = cls === "fday" && f.templow != null ? convertValue(f.templow, tempUnit, target) : null;
+  const icon = WEATHER_ICONS[f.condition || ""] || "mdi:weather-partly-cloudy";
+  const pop = f.precipitation_probability != null ? Math.round(Number(f.precipitation_probability)) : null;
+  const tempText = `${hi?.value != null ? Math.round(hi.value) : "—"}°${lo?.value != null ? ` / ${Math.round(lo.value)}°` : ""}`;
+  const aria = v.t("forecast.item_aria", { when, temp: tempText, pop: pop != null ? `${pop}%` : "—" });
+  return `<div class="${cls}" role="button" tabindex="0" aria-label="${esc(aria)}" data-key="forecast" data-entity="${esc(id)}" data-morph-key="${cls}-${esc(f.datetime || when)}">
+    <div class="${cls}-name" aria-hidden="true">${esc(when)}</div>
+    <ha-icon icon="${icon}" aria-hidden="true"></ha-icon>
+    <div class="${cls}-temp" aria-hidden="true">${tempText}</div>
+    ${pop != null ? `<div class="${cls}-pop" aria-hidden="true">${pop}%</div>` : ""}
+  </div>`;
+}
+function hourly(v) {
+  if (!v.wantHourly()) return "";
+  const id = v.config.weather_entity;
+  if (!id) return "";
+  const wanted = Math.min(24, Math.max(6, Number(v.config.hourly_forecast_hours) || 24));
+  const hours = (v.forecastHours || []).slice(0, wanted);
+  if (!hours.length) return "";
+  const tempUnit = entityState(v.hass, id)?.attributes?.temperature_unit || "";
+  return `<div class="forecast hourly" role="group" aria-label="${esc(v.t("forecast.hourly_region"))}">
+    ${hours.map((h) => {
+    const d = h.datetime ? new Date(h.datetime) : null;
+    const label = d && !Number.isNaN(d.getTime()) ? d.toLocaleTimeString(v.locale, { hour: "numeric" }) : "—";
+    return item(v, "fhour", id, label, h, tempUnit);
+  }).join("")}
+  </div>`;
+}
+const renderForecast = (v, ctx) => {
+  const showDaily = !!v.config.show_forecast;
+  const hourlyExplicit = v.config.show_hourly_forecast === true;
+  if (!showDaily && !v.wantHourly() && !hourlyExplicit) return "";
+  const { t } = v;
+  const hourlyHtml = hourly(v);
+  const id = v.config.weather_entity;
+  let body;
+  if (!id) {
+    body = `${hourlyHtml}<div class="hint">${esc(t("forecast.pick_entity"))}</div>`;
+  } else {
+    const st = entityState(v.hass, id);
+    if (!st) {
+      body = `${hourlyHtml}<div class="hint">${esc(t("forecast.missing", { id }))}</div>`;
+    } else {
+      let daily = "";
+      if (showDaily) {
+        const wanted = Math.min(7, Math.max(1, Number(v.config.forecast_days) || 5));
+        const days = (v.forecastDays.length ? v.forecastDays : st.attributes.forecast || []).slice(0, wanted);
+        if (!days.length) {
+          daily = `<div class="hint">${esc(t("forecast.waiting", { id }))}</div>`;
+        } else {
+          const tempUnit = st.attributes.temperature_unit || "";
+          daily = `<div class="forecast" role="group" aria-label="${esc(t("forecast.daily_region"))}">
+            ${days.map((d) => {
+            const when = d.datetime ? new Date(d.datetime) : null;
+            const label = when && !Number.isNaN(when.getTime()) ? when.toLocaleDateString(v.locale, { weekday: "short" }) : "—";
+            return item(v, "fday", id, label, d, tempUnit);
+          }).join("")}
+          </div>`;
+        }
+      }
+      body = `${hourlyHtml}${daily}`;
+    }
+  }
+  return v.wrapSection("forecast", ctx.compact, body);
+};
+const NON_SENSOR_KEYS = /* @__PURE__ */ new Set(["battery", "signal_strength"]);
+function friendlyName(st, prefix) {
+  const raw = String(st?.attributes?.friendly_name || st?.entity_id || "");
+  const p = String(prefix || "").trim();
+  if (!p) return raw;
+  const re = new RegExp(`^${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s_-]+`, "i");
+  return raw.replace(re, "") || raw;
+}
+function isBatteryEntity(st) {
+  const dc = st.attributes?.device_class;
+  if (dc === "battery") return true;
+  return /_battery(_\d+)?$/.test(st.entity_id) && /^(sensor|binary_sensor)\./.test(st.entity_id);
+}
+function discoverBatteries(hass, prefix, explicit, threshold) {
+  if (!hass) return [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const id of explicit || []) if (id) ids.add(id.trim());
+  const p = String(prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
+  if (!explicit?.length && p) {
+    for (const st of Object.values(hass.states)) {
+      const local = st.entity_id.split(".")[1] || "";
+      if (local.startsWith(`${p}_`) && isBatteryEntity(st)) ids.add(st.entity_id);
+    }
+  }
+  const limit = threshold == null || threshold === "" ? 20 : Number(threshold);
+  const out = [];
+  for (const id of ids) {
+    const st = hass.states[id];
+    if (!st) continue;
+    const level = num(st.state);
+    const low = level != null ? Number.isFinite(limit) && level <= limit : st.state === "on" || st.state.toLowerCase() === "low";
+    const icon = !available(st) ? "mdi:battery-unknown" : low ? "mdi:battery-alert" : level == null ? "mdi:battery" : level >= 95 ? "mdi:battery" : `mdi:battery-${Math.max(10, Math.min(90, Math.round(level / 10) * 10))}`;
+    out.push({ entityId: id, name: friendlyName(st, p), level, low, icon });
+  }
+  return out.sort((a, b) => Number(b.low) - Number(a.low) || a.name.localeCompare(b.name));
+}
+function lastReportMs(st) {
+  const raw = st?.last_reported;
+  if (!raw) return null;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+function healthReport(hass, entities, opts = {}) {
+  const report = { total: 0, ok: 0, offline: [], stale: [], batteries: [] };
+  if (!hass) return report;
+  const now = opts.now ?? Date.now();
+  const staleMs = (opts.staleMinutes ?? 30) > 0 ? (opts.staleMinutes ?? 30) * 6e4 : 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (const [key, id] of Object.entries(entities || {})) {
+    if (!id || seen.has(id) || NON_SENSOR_KEYS.has(key)) continue;
+    const st = hass.states[id];
+    if (!st) continue;
+    seen.add(id);
+    report.total += 1;
+    const name = friendlyName(st, opts.prefix);
+    if (!available(st)) {
+      report.offline.push({ key, entityId: id, name });
+      continue;
+    }
+    const reported = lastReportMs(st);
+    if (staleMs && reported != null && now - reported > staleMs) {
+      report.stale.push({ key, entityId: id, name, ageMs: now - reported });
+      continue;
+    }
+    report.ok += 1;
+  }
+  report.batteries = discoverBatteries(hass, opts.prefix, opts.batteryEntities, opts.batteryThreshold);
+  return report;
+}
+function batteryList(raw) {
+  if (!raw) return void 0;
+  const list = Array.isArray(raw) ? raw : String(raw).split(",");
+  const out = list.map((s) => String(s).trim()).filter(Boolean);
+  return out.length ? out : void 0;
+}
+const renderHealth = (v, ctx) => {
+  if (!ctx.showHealth || !v.hass) return "";
+  const { t } = v;
+  const report = healthReport(v.hass, v.config.entities, {
+    prefix: v.config.prefix,
+    staleMinutes: Number.isFinite(Number(v.config.stale_minutes)) ? Number(v.config.stale_minutes) : 30,
+    batteryEntities: batteryList(v.config.battery_entities),
+    batteryThreshold: v.config.battery_warning_threshold
+  });
+  const signal = ctx.signal;
+  const problems = report.offline.length + report.stale.length;
+  if (!report.batteries.length && !signal && !problems) return "";
+  if (!report.total && !report.batteries.length && !signal) return "";
+  const ok = problems === 0;
+  const summary = ok ? t("health.all_ok", { total: report.total }) : t("health.reporting", { ok: report.ok, total: report.total });
+  const issues = [
+    ...report.offline.map((s) => ({ ...s, note: t("health.offline"), icon: "mdi:lan-disconnect", cls: "bad" })),
+    ...report.stale.map((s) => ({
+      ...s,
+      note: t("health.stale", { when: relativeTime(new Date(Date.now() - (s.ageMs || 0)), v.locale) }),
+      icon: "mdi:clock-alert-outline",
+      cls: "warn"
+    }))
+  ];
+  const issueHtml = issues.length ? `<ul class="health-list" aria-label="${esc(t("health.offline"))}">${issues.map((s) => `<li><button class="health-row ${s.cls}" data-key="${esc(s.key)}" data-entity="${esc(s.entityId)}">
+          <ha-icon icon="${s.icon}" aria-hidden="true"></ha-icon>
+          <span class="health-name">${esc(s.name)}</span>
+          <span class="health-note">${esc(s.note)}</span>
+        </button></li>`).join("")}</ul>` : "";
+  const battHtml = report.batteries.length ? `<div class="health-sub">${esc(t("health.batteries"))}</div>
+      <ul class="health-batteries">${report.batteries.map((b) => {
+    const value = b.level != null ? `${Math.round(b.level)}%` : b.low ? t("health.battery_low") : t("health.battery_ok");
+    return `<li><button class="health-batt ${b.low ? "low" : ""}" data-key="battery_${esc(b.entityId)}" data-entity="${esc(b.entityId)}" aria-label="${esc(`${b.name}: ${value}${b.low && b.level != null ? ` (${t("health.battery_low")})` : ""}`)}">
+            <ha-icon icon="${b.icon}" aria-hidden="true"></ha-icon>
+            <span class="health-name">${esc(b.name)}</span>
+            <span class="health-note">${esc(value)}</span>
+          </button></li>`;
+  }).join("")}</ul>` : "";
+  const sigVal = num(signal?.state);
+  const signalTile = signal ? `<div class="grid">${v.tile("signal_strength", v.label("signal_strength", t("tile.signal_strength")), signal, sigVal == null ? "—" : `${fmtNum(sigVal, 0)} ${esc(v.unitStr("signal_strength", signal, unitOf(signal)))}`.trim(), "mdi:wifi", "teal")}</div>` : "";
+  const body = `<div class="health-summary ${ok ? "ok" : "warn"}" role="status">
+      <ha-icon icon="${ok ? "mdi:check-network-outline" : "mdi:alert-network-outline"}" aria-hidden="true"></ha-icon>
+      <span>${esc(summary)}</span>
+    </div>
+    ${issueHtml}
+    ${signalTile}
+    ${battHtml}`;
+  return v.wrapSection("health", ctx.compact, body);
+};
+const renderLightning = (v, ctx) => {
+  if (!ctx.showLightning) return "";
+  const { t } = v;
+  const count = num(ctx.lightningCount?.state);
+  const dist = num(ctx.lightningDistance?.state);
+  const distSrc = unitOf(ctx.lightningDistance) || "mi";
+  const body = `<div class="grid">
+    ${v.tile("lightning_count", v.label("lightning_count", t("tile.lightning_count")), ctx.lightningCount, count == null ? "—" : `${fmtNum(count, 0)}`, "mdi:flash", (count ?? 0) > 0 ? "amber" : "grey")}
+    ${v.tile("lightning_distance", v.label("lightning_distance", t("tile.lightning_distance")), ctx.lightningDistance, dist == null ? "—" : v.fmt("lightning_distance", ctx.lightningDistance, 0, distSrc), "mdi:map-marker-distance", "orange")}
+    ${v.tile("lightning_time", v.label("lightning_time", t("tile.lightning_time")), ctx.lightningTime, formatLastRain(ctx.lightningTime, v.hass, v.locale), "mdi:clock-outline", "amber")}
+  </div>`;
+  return v.wrapSection("lightning", ctx.compact, body);
+};
+function totalsSparkline(items, aria) {
+  const vals = items.map((i) => i.value).filter((x) => x != null && x >= 0);
+  const max = Math.max(...vals, 0.01);
+  const bars = items.map((i) => {
+    const h = i.value == null ? 2 : Math.max(4, Math.round(i.value / max * 36));
+    const on = i.value != null && i.value > 0;
+    return `<div class="bar-col"><div class="bar ${on ? "on" : ""}" style="height:${h}px"></div><div class="bar-lab">${esc(i.label)}</div></div>`;
+  }).join("");
+  return `<div class="spark" role="img" aria-label="${esc(aria)}">${bars}</div>`;
+}
+function precipTimeline(v) {
+  if (!v.wantPrecipTimeline()) return "";
+  const hours = v.historyHours();
+  const bars = v.precipBars || precipTimelineBars(v.history.rain_rate || [], hours, Math.min(36, Math.max(12, hours)));
+  if (!bars.length || !v.precipBars && !(v.history.rain_rate || []).length) return "";
+  const peakRaw = Math.max(...bars.map((b) => b.value), 0);
+  const rate = v.conv(v.st("rain_rate"), "in/h");
+  const peak = convertValue(peakRaw, rate.src || "in/h", v.config.unit_system || "native");
+  const peakFmt = peakRaw > 0 ? `${fmtNum(peak.value, 2)} ${peak.unit}`.trim() : "0";
+  const entity = v.config.entities?.rain_rate || "";
+  return `<div class="precip-timeline" role="button" tabindex="${entity ? 0 : -1}" aria-label="${esc(v.t("precip.aria", { hours, peak: peakFmt }))}" data-key="rain_rate" data-entity="${esc(entity)}">
+    <div class="precip-timeline-top" aria-hidden="true">
+      <span>${esc(v.t("precip.title"))}</span>
+      <span class="precip-timeline-meta">${esc(v.t("precip.meta", { hours, peak: peakFmt }))}</span>
+    </div>
+    ${precipTimelineSvg(bars)}
+  </div>`;
+}
+function rainGoal(v, ctx) {
+  const { t } = v;
+  const normal = num(v.config.rain_month_normal);
+  const monthConv = v.conv(ctx.month, "in");
+  const progress = rainMonthProgress(monthConv.raw, normal);
+  const target = v.config.unit_system || "native";
+  const monthVal = monthConv.value;
+  const normalVal = normal == null ? null : convertValue(normal, monthConv.src || "in", target).value;
+  const daysSince = daysSinceTimestamp(ctx.lastRain?.state);
+  const daysText = daysSince == null ? "" : daysSince < 1 ? "<1" : fmtNum(daysSince, 0);
+  if (progress.pct != null) {
+    const since = daysSince == null ? "" : ` · ${t(daysSince >= 1.5 ? "rain.since_other" : "rain.since_one", { n: daysText })}`;
+    return `<div class="rain-goal">
+      <div class="rain-goal-top">
+        <span>${esc(t("rain.month_vs_normal"))}</span>
+        <span>${fmtNum(monthVal, 2)} / ${fmtNum(normalVal, 2)}</span>
+      </div>
+      <div class="rain-goal-track" role="progressbar" aria-label="${esc(t("rain.month_vs_normal"))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, progress.pct)}" aria-valuetext="${esc(t("rain.pct_normal", { pct: progress.pct }))}"><div class="rain-goal-fill" style="width:${Math.min(100, progress.pct)}%"></div></div>
+      <div class="rain-goal-meta">${esc(t("rain.pct_normal", { pct: progress.pct }) + since)}</div>
+    </div>`;
+  }
+  if (daysSince != null) {
+    return `<div class="rain-goal"><div class="rain-goal-top"><span>${esc(t("rain.days_since"))}</span><span>${esc(daysText)}</span></div></div>`;
+  }
+  return "";
+}
+const renderRain = (v, ctx) => {
+  if (!ctx.showRain) return "";
+  const { t } = v;
+  const totals = {
+    today: num(ctx.today?.state),
+    event: num(ctx.event?.state),
+    week: num(ctx.week?.state),
+    month: num(ctx.month?.state),
+    year: num(ctx.year?.state)
+  };
+  const ariaTotals = t("rain.spark_aria", {
+    today: v.fmt("rain_today", ctx.today, 2, "in"),
+    event: v.fmt("rain_event", ctx.event, 2, "in"),
+    week: v.fmt("rain_week", ctx.week, 2, "in"),
+    month: v.fmt("rain_month", ctx.month, 2, "in"),
+    year: v.fmt("rain_year", ctx.year, 2, "in")
+  });
+  const wet = (n, on) => (n ?? 0) > 0 ? on : "grey";
+  const body = `
+    ${rainGoal(v, ctx)}
+    ${precipTimeline(v)}
+    ${totalsSparkline([
+    { label: t("rain.spark_today"), value: totals.today },
+    { label: t("rain.spark_event"), value: totals.event },
+    { label: t("rain.spark_week"), value: totals.week },
+    { label: t("rain.spark_month"), value: totals.month },
+    { label: t("rain.spark_year"), value: totals.year }
+  ], ariaTotals)}
+    <div class="grid">
+      ${v.tile("rain_rate", v.label("rain_rate", t("tile.rain_rate")), ctx.rate, ctx.rr.value == null ? "—" : `${fmtNum(ctx.rr.value, 2)} ${esc(v.unitStr("rain_rate", ctx.rate, ctx.rr.unit || ""))}`.trim(), "mdi:weather-rainy", ctx.raining ? "blue" : "grey")}
+      ${v.tile("rain_today", v.label("rain_today", t("tile.rain_today")), ctx.today, v.fmt("rain_today", ctx.today, 2, "in"), "mdi:cup-water", wet(totals.today, "cyan"))}
+      ${v.tile("rain_event", v.label("rain_event", t("tile.rain_event")), ctx.event, v.fmt("rain_event", ctx.event, 2, "in"), "mdi:weather-pouring", wet(totals.event, "blue"))}
+      ${v.tile("rain_week", v.label("rain_week", t("tile.rain_week")), ctx.week, v.fmt("rain_week", ctx.week, 2, "in"), "mdi:calendar-week", wet(totals.week, "blue"))}
+      ${v.tile("rain_month", v.label("rain_month", t("tile.rain_month")), ctx.month, v.fmt("rain_month", ctx.month, 2, "in"), "mdi:calendar-month", wet(totals.month, "blue"))}
+      ${v.tile("rain_year", v.label("rain_year", t("tile.rain_year")), ctx.year, v.fmt("rain_year", ctx.year, 2, "in"), "mdi:calendar-star", wet(totals.year, "blue"))}
+      ${v.tile("last_rain", v.label("last_rain", t("tile.last_rain")), ctx.lastRain, formatLastRain(ctx.lastRain, v.hass, v.locale), "mdi:clock-outline", "blue")}
+    </div>`;
+  return v.wrapSection("rain", ctx.compact, body);
+};
+const renderRecords = (v, ctx) => {
+  if (!v.wantRecords()) return "";
+  const { t } = v;
+  const book = v.recordsBook;
+  const period = v.config.records_period === "year" ? t("records.year") : t("records.month");
+  const target = v.config.unit_system || "native";
+  const tempSrc = v.conv(ctx.temp, "°F").src || "°F";
+  const gustSrc = v.conv(ctx.gust || ctx.maxGust, "mph").src || "mph";
+  const rateSrc = v.conv(ctx.rate, "in/h").src || "in/h";
+  const rainSrc = v.conv(ctx.today, "in").src || "in";
+  const when = (ex) => relativeTime(new Date(ex.at), v.locale);
+  const fmt = (ex, src, digits, fallbackUnit, isTemp = false) => {
+    if (!ex) return { value: "—", when: "" };
+    const c = convertValue(ex.value, src, target);
+    if (c.value == null) return { value: "—", when: when(ex) };
+    const value = isTemp ? `${Math.round(c.value)}°` : `${fmtNum(c.value, digits)} ${esc(c.unit || fallbackUnit)}`.trim();
+    return { value, when: when(ex) };
+  };
+  if (!book || !book.hottest && !book.coldest && !book.peakGust && !book.peakRainRate && !book.wettestDay) {
+    return v.wrapSection("records", ctx.compact, `<div class="hint">${esc(t("records.empty", { period: period.toLowerCase() }))}</div>`);
+  }
+  const rows = [
+    { label: t("records.hottest", { period }), ex: book.hottest, out: fmt(book.hottest, tempSrc, 0, "°", true) },
+    { label: t("records.coldest", { period }), ex: book.coldest, out: fmt(book.coldest, tempSrc, 0, "°", true) },
+    { label: t("records.peak_gust", { period }), ex: book.peakGust, out: fmt(book.peakGust, gustSrc, 1, "mph") },
+    { label: t("records.peak_rate", { period }), ex: book.peakRainRate, out: fmt(book.peakRainRate, rateSrc, 2, "") },
+    { label: t("records.wettest", { period }), ex: book.wettestDay, out: fmt(book.wettestDay, rainSrc, 2, "in") }
+  ];
+  const tiles = rows.map(({ label, ex, out }) => {
+    const set = isRecordSetToday(ex);
+    return `<div class="record-tile ${set ? "set" : ""}" role="listitem">
+        <div class="record-label">${esc(label)}</div>
+        <div class="record-value">${out.value}</div>
+        ${out.when ? `<div class="record-when">${esc(out.when)}</div>` : ""}
+        ${set ? `<span class="record-badge">${esc(t("records.set_today"))}</span>` : ""}
+      </div>`;
+  }).join("");
+  const source = v.recordsSource === "history" ? `<div class="records-source warn">${esc(t("records.source_history"))}</div>` : "";
+  return v.wrapSection(
+    "records",
+    ctx.compact,
+    `<div class="records-grid" role="list" aria-label="${esc(t("records.title", { period }))}">${tiles}</div>${source}`
+  );
+};
+const renderSoil = (v, ctx) => {
+  if (!ctx.showSoil) return "";
+  const { t } = v;
+  const parts = [];
+  for (let i = 1; i <= 8; i++) {
+    const mKey = `soil_moisture_${i}`;
+    const tKey = `soil_temperature_${i}`;
+    const mSt = v.st(mKey);
+    const tSt = v.st(tKey);
+    const moisture = num(mSt?.state);
+    const tConv = v.conv(tSt, "°F");
+    parts.push(
+      v.tile(mKey, v.label(mKey, t("tile.soil_moisture", { n: i })), mSt, moisture == null ? "—" : `${Math.round(moisture)}%`, "mdi:water", v.color(mKey, moisture, "green")),
+      v.tile(tKey, v.label(tKey, t("tile.soil_temperature", { n: i })), tSt, tSt && tConv.value != null ? `${fmtNum(tConv.value, 1)}°` : "—", "mdi:thermometer", v.color("temperature", num(tSt?.state), "amber", tConv.src || "°F"))
+    );
+  }
+  const leaf = v.st("leaf_wetness");
+  const leafN = num(leaf?.state);
+  parts.push(v.tile("leaf_wetness", v.label("leaf_wetness", t("tile.leaf_wetness")), leaf, leafN == null ? "—" : `${Math.round(leafN)}%`, "mdi:leaf", v.color("leaf_wetness", leafN, "cyan")));
+  return v.wrapSection("soil", ctx.compact, `<div class="grid">${parts.join("")}</div>`);
+};
+const renderStation = (v, ctx) => {
+  if (!ctx.showMore) return "";
+  const { t } = v;
+  const pressureLabel = ctx.trend.key ? t("tile.pressure_trend", { trend: v.meta(ctx.trend) }) : t("tile.pressure");
+  const indoorT = v.conv(ctx.indoorT, "°F");
+  const indoorH = num(ctx.indoorH?.state);
+  const co2 = num(ctx.co2?.state);
+  const pDigits = (st) => /inhg/i.test(v.conv(st, "inHg").unit) ? 2 : 1;
+  const body = `<div class="grid">
+    ${v.tile("pressure", v.label("pressure", pressureLabel), ctx.pressure, v.fmt("pressure", ctx.pressure, pDigits(ctx.pressure), unitOf(ctx.pressure) || "inHg"), ctx.trend.icon || "mdi:gauge", ctx.trend.color === "grey" ? "teal" : ctx.trend.color, v.histSpark("pressure"))}
+    ${v.tile("pressure_abs", v.label("pressure_abs", t("tile.pressure_abs")), ctx.pressureAbs, v.fmt("pressure_abs", ctx.pressureAbs, pDigits(ctx.pressureAbs), unitOf(ctx.pressureAbs) || "inHg"), "mdi:gauge", "teal")}
+    ${v.tile("indoor_temperature", v.label("indoor_temperature", t("tile.indoor_temperature")), ctx.indoorT, ctx.indoorT && indoorT.value != null ? `${fmtNum(indoorT.value, 1)}°` : "—", "mdi:home-thermometer", v.color("temperature", num(ctx.indoorT?.state), "green", indoorT.src || "°F"))}
+    ${v.tile("indoor_humidity", v.label("indoor_humidity", t("tile.indoor_humidity")), ctx.indoorH, indoorH == null ? "—" : `${Math.round(indoorH)}%`, "mdi:water-percent", v.color("humidity", indoorH, "cyan"))}
+    ${v.tile("co2", v.label("co2", t("tile.co2")), ctx.co2, co2 == null ? "—" : `${fmtNum(co2, 0)} ${esc(v.unitStr("co2", ctx.co2, "ppm"))}`, "mdi:molecule-co2", v.color("co2", co2, "green"))}
+  </div>`;
+  return v.wrapSection("station", ctx.compact, body);
+};
+const renderSun = (v, ctx) => {
+  if (!ctx.showSun) return "";
+  const { t } = v;
+  const moonLabel = v.meta(ctx.moonMeta);
+  const body = `<div class="grid">
+    ${v.tile("uv", v.label("uv", ctx.uvn == null ? t("tile.uv") : v.meta(ctx.uvm)), ctx.uv, ctx.uvn == null ? "—" : `${fmtNum(ctx.uvn, 0)}`, "mdi:weather-sunny-alert", ctx.uvm.color)}
+    ${v.tile("irradiance", v.label("irradiance", t("tile.irradiance")), ctx.irr, num(ctx.irr?.state) == null ? "—" : `${fmtNum(num(ctx.irr?.state), 0)} ${esc(v.unitStr("irradiance", ctx.irr, unitOf(ctx.irr)))}`.trim(), "mdi:solar-power-variant", "amber")}
+    ${v.tile("illuminance", v.label("illuminance", t("tile.illuminance")), ctx.lux, num(ctx.lux?.state) == null ? "—" : `${fmtNum(num(ctx.lux?.state), 0)} ${esc(v.unitStr("illuminance", ctx.lux, "lx"))}`, "mdi:brightness-5", "amber")}
+    ${ctx.sunrise ? v.tile("sunrise", t("tile.sunrise"), ctx.sun, ctx.sunrise, "mdi:weather-sunset-up", "amber") : ""}
+    ${ctx.sunset ? v.tile("sunset", t("tile.sunset"), ctx.sun, ctx.sunset, "mdi:weather-sunset-down", "orange") : ""}
+    ${ctx.moon ? v.tile("moon", t("moon.label"), ctx.moon, moonLabel, ctx.moonMeta.icon, "purple") : ""}
+  </div>`;
+  return v.wrapSection("sun", ctx.compact, body);
+};
+function compass(v, deg, card) {
+  const valid = Number.isFinite(deg);
+  const angle = valid ? deg : 0;
+  const entity = v.st("wind_direction")?.entity_id || "";
+  const aria = valid ? v.t("wind.compass_aria", { dir: card || "—", deg: Math.round(deg) }) : v.t("wind.compass_none");
+  return `
+    <div class="compass" role="button" tabindex="${entity ? 0 : -1}" aria-label="${esc(aria)}" data-key="wind_direction" data-entity="${esc(entity)}">
+      <svg viewBox="0 0 100 100" class="compass-svg ${valid ? "" : "muted"}" aria-hidden="true" focusable="false">
+        <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-opacity="0.16" stroke-width="2"/>
+        <circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-opacity="0.08" stroke-width="1"/>
+        <circle cx="50" cy="50" r="3" fill="currentColor"/>
+        <text x="50" y="16" text-anchor="middle" font-size="9" fill="currentColor">N</text>
+        <text x="50" y="94" text-anchor="middle" font-size="9" fill="currentColor">S</text>
+        <text x="10" y="54" text-anchor="middle" font-size="9" fill="currentColor">W</text>
+        <text x="90" y="54" text-anchor="middle" font-size="9" fill="currentColor">E</text>
+        <g class="compass-needle" style="transform: rotate(${angle}deg)">
+          <polygon points="50,12 55,48 50,42 45,48" fill="${iconColorVar("teal")}"/>
+        </g>
+      </svg>
+      <div class="compass-label" aria-hidden="true">${esc(card || "—")} ${valid ? `${Math.round(deg)}°` : ""}</div>
+    </div>
+  `;
+}
+const renderWind = (v, ctx) => {
+  if (!ctx.showWind) return "";
+  const { t } = v;
+  const rosePts = v.history.wind_direction || [];
+  let rose = "";
+  if (v.config.show_wind_rose !== false && rosePts.length) {
+    const bins = windRoseBins(rosePts.map((p) => p.state));
+    const top = bins.reduce((a, b) => b.count > a.count ? b : a, bins[0]);
+    const hours = v.historyHours();
+    rose = `<div class="wind-rose" role="button" tabindex="0" aria-label="${esc(t("wind.rose_aria", { hours, dir: top?.label || "—" }))}" data-key="wind_direction" data-entity="${esc(ctx.wdir?.entity_id || "")}">
+      ${windRoseSvg(bins)}
+      <div class="wind-rose-label" aria-hidden="true">${esc(t("wind.rose", { hours }))}</div>
+    </div>`;
+  }
+  const speedLabel = ctx.bf != null ? t("tile.wind_speed_bf", { n: ctx.bf }) : t("tile.wind_speed");
+  const body = `<div class="wind-row ${rose ? "with-rose" : ""}">
+    ${compass(v, ctx.deg, ctx.card)}
+    ${rose}
+    <div class="grid wind-grid">
+      ${v.tile("wind_speed", v.label("wind_speed", speedLabel), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(v.unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", v.color("wind_speed", ctx.ws.raw, "teal", ctx.ws.src || "mph"), v.histSpark("wind_speed"))}
+      ${v.tile("wind_gust", v.label("wind_gust", t("tile.wind_gust")), ctx.gust, ctx.wg.value == null ? "—" : `${fmtNum(ctx.wg.value, 1)}`, "mdi:windsock", v.color("wind_gust", ctx.wg.raw, "teal", ctx.wg.src || "mph"))}
+      ${v.tile("max_gust", v.label("max_gust", t("tile.max_gust")), ctx.maxGust, num(ctx.maxGust?.state) == null ? "—" : v.fmt("max_gust", ctx.maxGust, 1, "mph"), "mdi:weather-windy-variant", "teal")}
+    </div>
+  </div>`;
+  return v.wrapSection("wind", ctx.compact, body);
+};
+function renderAlerts(v) {
+  if (v.config.show_alerts === false) return "";
+  const weather = entityState(v.hass, v.config.weather_entity);
+  const alertEnt = entityState(v.hass, v.config.alert_entity);
+  const alerts = collectAlerts(weather, alertEnt).slice(0, 3);
+  if (!alerts.length) return "";
+  const entityId = v.config.alert_entity || v.config.weather_entity || "";
+  return `<div class="alerts" role="region" aria-label="${esc(v.t("alerts.region"))}">${alerts.map((a, i) => {
+    const sev = alertSeverityColor(a.severity);
+    const title = a.title || a.event || v.t("alerts.default");
+    const desc = a.description || "";
+    return `<button class="alert sev-${sev}" data-key="alert" data-entity="${esc(entityId)}" data-morph-key="alert-${i}-${esc(title)}">
+        <ha-icon icon="mdi:alert" style="color:${iconColorVar(sev)}" aria-hidden="true"></ha-icon>
+        <div>
+          <div class="alert-title">${esc(title)}</div>
+          ${desc ? `<div class="alert-desc">${esc(desc)}</div>` : ""}
+        </div>
+      </button>`;
+  }).join("")}</div>`;
+}
+function renderChips(v, ctx, expanded) {
+  const { t } = v;
+  const h = num(ctx.humidity?.state);
+  const uv = num(ctx.uv?.state);
+  const primary = [
+    { key: "temperature", st: ctx.temp, icon: "mdi:thermometer", text: ctx.t.value == null ? "—" : `${Math.round(ctx.t.value)}°`, label: t("tile.temperature") },
+    { key: "feels_like", st: ctx.feels, icon: "mdi:sun-thermometer", text: ctx.f.value == null ? "—" : `${Math.round(ctx.f.value)}°`, label: t("tile.feels_like") },
+    { key: "humidity", st: ctx.humidity, icon: "mdi:water-percent", text: h == null ? "—" : `${Math.round(h)}%`, label: t("tile.humidity") },
+    { key: "rain_today", st: ctx.today, icon: ctx.raining ? "mdi:weather-pouring" : "mdi:weather-rainy", text: v.fmt("rain_today", ctx.today, 2, "in"), label: t("tile.rain_today") },
+    { key: "wind_speed", st: ctx.wind, icon: "mdi:weather-windy", text: v.fmt("wind_speed", ctx.wind, 0, "mph"), label: t("tile.wind_speed") }
+  ].filter((c) => !!c.st);
+  const extra = [
+    { key: "pressure", st: ctx.pressure, icon: "mdi:gauge", text: v.fmt("pressure", ctx.pressure, 2, "inHg"), label: t("tile.pressure") },
+    { key: "uv", st: ctx.uv, icon: "mdi:weather-sunny-alert", text: uv == null ? "—" : `${fmtNum(uv, 0)} UV`, label: t("tile.uv") },
+    { key: "wind_gust", st: ctx.gust, icon: "mdi:windsock", text: v.fmt("wind_gust", ctx.gust, 0, "mph"), label: t("tile.wind_gust") }
+  ].filter((c) => !!c.st);
+  const chip = (c) => `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st.entity_id)}" aria-label="${esc(`${v.label(c.key, c.label)}: ${c.text}`)}"><ha-icon icon="${c.icon}" aria-hidden="true"></ha-icon><span aria-hidden="true">${esc(c.text)}</span></button>`;
+  const toggle = expanded ? t("chips.less") : t("chips.more");
+  return `<div class="chips-bar ${expanded ? "expanded" : ""}" role="group" aria-label="${esc(t("chips.region"))}">
+    <div class="chips">
+      ${primary.map(chip).join("")}
+      ${extra.length ? `<button class="chip expand" data-key="__chips_expand" data-entity="" aria-expanded="${expanded}" aria-controls="chips-extra"><ha-icon icon="mdi:chevron-down" aria-hidden="true"></ha-icon><span>${esc(toggle)}</span></button>` : ""}
+    </div>
+    ${extra.length ? `<div class="chips-extra" id="chips-extra" ${expanded ? "" : "hidden"}>${extra.map(chip).join("")}</div>` : ""}
+  </div>`;
+}
+const SECTION_RENDERERS = {
+  conditions: renderConditions,
+  wind: renderWind,
+  rain: renderRain,
+  sun: renderSun,
+  soil: renderSoil,
+  lightning: renderLightning,
+  air: renderAir,
+  station: renderStation,
+  health: renderHealth,
+  records: renderRecords,
+  comfort: renderComfort,
+  forecast: renderForecast,
+  battery: renderBattery
+};
 const CARD_STYLES = `
   :host {
     display: block;
@@ -859,6 +3020,7 @@ const CARD_STYLES = `
     --mws-chip-bg: color-mix(in srgb, var(--mws-primary) 10%, var(--ha-card-background, var(--card-background-color)));
   }
   ha-card {
+    display: block;
     padding: var(--mws-pad) var(--mws-pad) 10px;
     background: var(--ha-card-background, var(--card-background-color));
     overflow: hidden;
@@ -1153,6 +3315,8 @@ const CARD_STYLES = `
     display: flex;
     gap: 8px;
     overflow-x: auto;
+    /* Scroll instead of widening the card to fit every hour. */
+    contain: inline-size;
     padding: 2px 0 4px;
     scrollbar-width: thin;
   }
@@ -1465,32 +3629,170 @@ const CARD_STYLES = `
       max-width: 100%;
     }
   }
+
+  /* --- 0.9: headings, focus, motion ------------------------------------- */
+  h2.title, h3.section-label { margin: 0; }
+  h3.section-label { padding: 0 4px 8px; }
+  .compass, .wind-rose, .precip-timeline, .battery, .fday, .fhour { cursor: pointer; }
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  .graph-chart:focus-visible {
+    outline: 2px solid var(--mws-primary);
+    outline-offset: 2px;
+  }
+  .compass-needle {
+    transform-box: view-box;
+    transform-origin: 50px 50px;
+    transition: transform 420ms ease;
+  }
+  .tile.derived .tile-label { font-style: italic; }
+  .records-source {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--secondary-text-color);
+  }
+  .records-source.warn { color: var(--warning-color, #ff9800); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+
+  /* --- Station health --------------------------------------------------- */
+  .health-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .health-summary ha-icon { --mdc-icon-size: 18px; }
+  .health-summary.ok ha-icon { color: var(--success-color, #4caf50); }
+  .health-summary.warn ha-icon { color: var(--warning-color, #ff9800); }
+  .health-sub {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--secondary-text-color);
+    margin: 10px 4px 4px;
+  }
+  .health-list, .health-batteries {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+  }
+  .health-batteries { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .health-row, .health-batt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--mws-border);
+    border-radius: var(--mws-radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .health-row ha-icon, .health-batt ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); }
+  .health-row.bad ha-icon, .health-batt.low ha-icon { color: var(--error-color, #f44336); }
+  .health-row.warn ha-icon { color: var(--warning-color, #ff9800); }
+  .health-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .health-note { color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
+  .health-batt.low .health-note { color: var(--error-color, #f44336); font-weight: 700; }
+  .section[data-section="health"] .grid { margin-top: 6px; }
+
+  /* --- Graph popup ------------------------------------------------------ */
+  dialog.graph-dialog {
+    padding: 0;
+    border: 0;
+    border-radius: var(--mws-radius);
+    width: min(560px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    background: var(--ha-card-background, var(--card-background-color, #fff));
+    color: var(--primary-text-color);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  }
+  dialog.graph-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+  .graph-inner { padding: 16px 16px 12px; display: grid; gap: 10px; }
+  .graph-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .graph-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+  .graph-icon-btn, .graph-more, .graph-range {
+    border: 1px solid var(--mws-border);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .graph-icon-btn { width: 36px; height: 36px; display: grid; place-items: center; }
+  .graph-ranges { display: flex; gap: 6px; }
+  .graph-range { padding: 5px 12px; font-size: 12.5px; }
+  .graph-range[aria-checked="true"] {
+    background: color-mix(in srgb, var(--mws-primary) 18%, transparent);
+    border-color: color-mix(in srgb, var(--mws-primary) 50%, transparent);
+    font-weight: 650;
+  }
+  .graph-body { min-height: 170px; }
+  .graph-empty { display: grid; place-items: center; min-height: 160px; color: var(--secondary-text-color); font-size: 13px; }
+  .graph-chart { color: var(--mws-primary); border-radius: var(--mws-radius-sm); touch-action: pan-y; }
+  .graph-svg { display: block; overflow: visible; }
+  .graph-line { fill: none; stroke: currentColor; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .graph-band { fill: currentColor; opacity: 0.16; }
+  .graph-grid { stroke: var(--primary-text-color); stroke-opacity: 0.08; vector-effect: non-scaling-stroke; }
+  .graph-cursor { stroke: var(--primary-text-color); stroke-opacity: 0.5; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+  .graph-dot { display: none; }
+  .graph-axis, .graph-source { display: flex; justify-content: space-between; font-size: 11px; color: var(--secondary-text-color); }
+  .graph-readout { min-height: 1.2em; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .graph-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0; }
+  .graph-stats div { padding: 6px 8px; border-radius: var(--mws-radius-sm); background: var(--mws-surface); }
+  .graph-stats dt { font-size: 11px; color: var(--secondary-text-color); }
+  .graph-stats dd { margin: 2px 0 0; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .graph-foot { display: flex; justify-content: flex-end; }
+  .graph-more { padding: 6px 14px; font-size: 12.5px; }
 `;
-const CARD_VERSION = "0.8.0";
+const CARD_VERSION = "0.9.0";
+const RANGE_MS = {
+  "24h": 24 * 36e5,
+  "7d": 7 * 864e5,
+  "30d": 30 * 864e5
+};
+function numberLocaleFor(hass, language) {
+  const pref = hass?.locale?.number_format;
+  if (pref === "comma_decimal" || pref === "none") return "en";
+  if (pref === "decimal_comma") return "de";
+  if (pref === "space_comma") return "fr";
+  if (pref === "system" && typeof navigator !== "undefined") return navigator.language;
+  return language;
+}
 const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HTMLElement {
   constructor() {
     super(...arguments);
+    this._card = null;
+    this._dialog = null;
     this._forecastSubId = null;
     this._forecastUnsub = null;
     this._hourlyUnsub = null;
-    this._forecastDays = [];
-    this._forecastHours = [];
     this._forecastError = null;
     this._forecastToken = 0;
     this._renderSignature = null;
+    this._configStamp = 0;
     this._staleTimer = null;
     this._prevPressure = null;
     this._pressureSample = null;
-    this._history = {};
-    this._precipBars = null;
-    this._comfortTemp = [];
-    this._comfortHum = [];
-    this._historyWindow = null;
     this._historyToken = 0;
     this._historyFetchedAt = 0;
     this._historyPending = false;
-    this._recordsHistory = {};
-    this._recordsBook = null;
     this._recordsToken = 0;
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
@@ -1499,6 +3801,23 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._forecastAbsentKey = null;
     this._forecastRetryAt = 0;
     this._chipsExpanded = false;
+    this._graph = null;
+    this._graphCache = /* @__PURE__ */ new Map();
+    this._graphToken = 0;
+    this._holdTimer = null;
+    this._held = false;
+    this._holdEl = null;
+    this.forecastDays = [];
+    this.forecastHours = [];
+    this.history = {};
+    this.precipBars = null;
+    this.comfortTemp = [];
+    this.comfortHum = [];
+    this.historyWindow = null;
+    this.recordsBook = null;
+    this.recordsSource = null;
+    this.t = makeTranslator("en");
+    this.locale = "en";
   }
   static getStubConfig() {
     return {
@@ -1521,6 +3840,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     }
     return document.createElement(`${CARD_TYPE}-editor`);
   }
+  get config() {
+    return this._config || {};
+  }
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
     const prevWeather = this._config?.weather_entity || null;
@@ -1541,7 +3863,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       show_records: true,
       show_comfort: true,
       seasonal_skins: true,
-      // Hourly follows weather_entity when unset (see _wantHourly).
+      derive_missing: true,
+      graph_popup: false,
+      // Hourly follows weather_entity when unset (see wantHourly).
       stale_minutes: 30,
       forecast_days: 5,
       hourly_forecast_hours: 24,
@@ -1559,36 +3883,41 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._historyToken++;
     this._recordsToken++;
     if (prevWeather !== nextWeather) {
-      this._forecastDays = [];
-      this._forecastHours = [];
+      this.forecastDays = [];
+      this.forecastHours = [];
       this._forecastError = null;
     }
-    this._history = {};
-    this._precipBars = null;
-    this._comfortTemp = [];
-    this._comfortHum = [];
-    this._historyWindow = null;
+    this.history = {};
+    this.precipBars = null;
+    this.comfortTemp = [];
+    this.comfortHum = [];
+    this.historyWindow = null;
     this._historyFetchedAt = 0;
     this._historyPending = false;
-    this._recordsHistory = {};
-    this._recordsBook = null;
+    this.recordsBook = null;
+    this.recordsSource = null;
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
+    this._graphCache.clear();
+    this._configStamp++;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
-    void this._ensureRecordsHistory();
+    void this._ensureRecords();
     this._render(true);
   }
   set hass(hass) {
     this._hass = hass;
     void this._ensureForecastSub();
     void this._ensureHistory();
-    void this._ensureRecordsHistory();
+    void this._ensureRecords();
     this._render(false);
   }
   get hass() {
     return this._hass;
+  }
+  connectedCallback() {
+    if (this._config) this._render(true);
   }
   disconnectedCallback() {
     this._forecastToken++;
@@ -1601,6 +3930,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       window.clearInterval(this._staleTimer);
       this._staleTimer = null;
     }
+    if (this._dialog?.open) this._dialog.close();
   }
   _teardownForecast(clearReady) {
     if (this._forecastUnsub) {
@@ -1637,59 +3967,98 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     if (layout === "compact") return { columns: 12, rows: 5 };
     return { columns: 12, rows: 9 };
   }
-  _st(key) {
+  // ---------------------------------------------------------------------------
+  // View helpers
+  // ---------------------------------------------------------------------------
+  st(key) {
     return entityState(this._hass, this._config?.entities?.[key]);
   }
-  _label(key, fallback) {
+  label(key, fallback) {
     return this._config?.labels?.[key] || fallback;
   }
-  _conv(st, fallbackUnit = "") {
+  meta(m) {
+    return m.key && hasKey(m.key) ? this.t(m.key) : m.label;
+  }
+  conv(st, fallbackUnit = "") {
     const raw = num(st?.state);
     const src = this._config?.units_source?.[st?.entity_id || ""] || unitOf(st) || fallbackUnit;
     const target = this._config?.unit_system || "native";
     const out = convertValue(raw, src || fallbackUnit, target);
     return { raw, ...out, src };
   }
-  _unitStr(key, st, fallback = "") {
-    return this._config?.units?.[key] || this._conv(st, fallback).unit || fallback;
+  unitStr(key, st, fallback = "") {
+    return this._config?.units?.[key] || this.conv(st, fallback).unit || fallback;
   }
-  _fmt(key, st, digits, fallbackUnit = "") {
-    const c = this._conv(st, fallbackUnit);
+  fmt(key, st, digits, fallbackUnit = "") {
+    const c = this.conv(st, fallbackUnit);
     if (c.value == null) return "—";
     const unit = this._config?.units?.[key] || c.unit || fallbackUnit;
     return `${fmtNum(c.value, digits)}${unit ? ` ${unit}` : ""}`.trim();
   }
-  _color(key, value, fallback = "grey", unit = "") {
+  color(key, value, fallback = "grey", unit = "") {
     const compare = unit ? thresholdCompareValue(value, unit) : value;
     return colorFromThresholds(compare, mergeThresholds(this._config, key), fallback);
+  }
+  tile(key, label, st, value, icon, color, spark = "", opts = {}) {
+    if (!st && !this._config?.show_empty) return "";
+    const entityId = st?.entity_id || "";
+    const shown = opts.derived ? this.t("derived.suffix", { label }) : label;
+    return `
+      <button class="tile${opts.derived ? " derived" : ""}" data-key="${esc(key)}" data-entity="${esc(entityId)}"${opts.derived ? ` data-derived="1" title="${esc(this.t("derived.title"))}"` : ""} ${entityId ? "" : "disabled"} aria-label="${esc(`${shown}: ${value}`)}">
+        <ha-icon icon="${icon}" style="color:${iconColorVar(color)}" aria-hidden="true"></ha-icon>
+        <div class="tile-value" aria-hidden="true">${esc(String(value))}</div>
+        <div class="tile-label" aria-hidden="true">${esc(shown)}</div>
+        ${spark}
+      </button>
+    `;
+  }
+  histSpark(key) {
+    if (this._config?.show_history_sparklines === false) return "";
+    const pts = this.history[key];
+    if (!pts?.length) return "";
+    return historyLineSpark(downsampleHistory(pts));
+  }
+  wrapSection(id, compact, body) {
+    if (!body) return "";
+    const title = this.t(`section.${id}`);
+    const heading = compact ? "" : `<h3 class="section-label" id="sec-${id}"><span>${esc(title)}</span></h3>`;
+    const labelAttr = compact ? `aria-label="${esc(title)}"` : `aria-labelledby="sec-${id}"`;
+    return `<section class="section" data-section="${id}" ${labelAttr}>${heading}${body}</section>`;
+  }
+  historyHours() {
+    return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
+  }
+  wantHourly() {
+    if (!this._config?.weather_entity) return false;
+    return this._config.show_hourly_forecast !== false;
+  }
+  wantPrecipTimeline() {
+    return this._config?.show_precip_timeline !== false && !this._config?.hide_rain;
+  }
+  wantComfort() {
+    return this._config?.show_comfort !== false && !this._config?.hide_comfort;
+  }
+  wantRecords() {
+    return this._config?.show_records !== false && !this._config?.hide_records;
   }
   _sectionVisible(hideKey, states) {
     if (this._config?.[hideKey]) return false;
     if (this._config?.show_empty) return true;
     return states.some((st) => available(st));
   }
-  _watchedSignature() {
-    const entities = this._config?.entities || {};
-    const ids = Object.values(entities).filter(Boolean);
-    if (this._config?.weather_entity) ids.push(this._config.weather_entity);
-    if (this._config?.alert_entity) ids.push(this._config.alert_entity);
-    if (this._config?.sun_entity) ids.push(this._config.sun_entity);
-    if (this._config?.moon_entity) ids.push(this._config.moon_entity);
-    const parts = ids.map((id) => {
-      const st = this._hass?.states?.[id];
-      if (!st) return `${id}:missing`;
-      return `${id}:${st.state}:${st.last_updated || ""}`;
-    });
-    parts.push(
-      `cfg:${this._config?.layout}|${this._config?.unit_system}|${this._config?.show_forecast}|${this._config?.show_hourly_forecast}|${this._config?.forecast_days}|${this._config?.hourly_forecast_hours}|${this._config?.show_updated}|${this._config?.stale_minutes}|${this._config?.show_beaufort}|${this._config?.show_history_sparklines}|${this._config?.show_wind_rose}|${this._config?.show_alerts}|${this._config?.show_precip_timeline}|${this._config?.show_records}|${this._config?.show_comfort}|${this._config?.seasonal_skins}|${this._config?.records_period}|${this._config?.hemisphere}|${this._config?.rain_month_normal}|${(this._config?.section_order || []).join(",")}|chips:${this._chipsExpanded}|hist:${this._historyFetchedAt}|rec:${this._recordsFetchedAt}`
-    );
-    parts.push(`fc:${(this._forecastDays || []).length}:${(this._forecastHours || []).length}:${this._forecastError || ""}`);
-    parts.push(`hist:${Object.keys(this._history).map((k) => `${k}:${this._history[k]?.length || 0}`).join(",")}`);
-    return parts.join("|");
+  _recordsDays() {
+    return this._config?.records_period === "year" ? 365 : 30;
   }
-  _handleAction(actionCfg, entityId) {
+  // ---------------------------------------------------------------------------
+  // Actions & events (delegated once on the shadow root)
+  // ---------------------------------------------------------------------------
+  _handleAction(actionCfg, entityId, key = "", el) {
     const action = actionCfg?.action || "more-info";
     if (action === "none") return;
+    if (action === "graph") {
+      if (entityId) this._openGraph(key, entityId, el || null);
+      return;
+    }
     if (action === "more-info" || !actionCfg) {
       if (!entityId) return;
       this.dispatchEvent(new CustomEvent("hass-more-info", { bubbles: true, composed: true, detail: { entityId } }));
@@ -1709,86 +4078,306 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this._hass.callService(domain, service, actionCfg.service_data || actionCfg.data || {});
     }
   }
-  _bindTile(el, key, entityId) {
+  _defaultTap(key, el) {
+    if (this._config?.tablet_mode) return { action: "none" };
+    if (this._config?.graph_popup && GRAPH_KEYS.has(key) && !el.dataset.derived) {
+      const st = this._hass?.states?.[el.dataset.entity || ""];
+      if (st && num(st.state) != null) return { action: "graph" };
+    }
+    return { action: "more-info" };
+  }
+  _actionsFor(key, el) {
     const acts = this._config?.actions?.[key] || {};
     const tablet = !!this._config?.tablet_mode;
-    const tap = acts.tap_action || (tablet ? { action: "none" } : { action: "more-info" });
-    const hold = acts.hold_action || (tablet ? { action: "more-info" } : null);
-    const dbl = acts.double_tap_action;
-    let holdTimer = null;
-    let held = false;
-    el.addEventListener("click", (ev) => {
-      ev.preventDefault();
-      if (held) {
-        held = false;
-        return;
-      }
-      if (key === "__chips_expand") {
-        this._chipsExpanded = !this._chipsExpanded;
-        this._renderSignature = null;
-        this._render(true);
-        this.shadowRoot?.querySelector('[data-key="__chips_expand"]')?.focus();
-        return;
-      }
-      this._handleAction(tap, entityId);
-    });
-    el.addEventListener("dblclick", (ev) => {
+    return {
+      tap: acts.tap_action || this._defaultTap(key, el),
+      hold: acts.hold_action || (tablet ? { action: "more-info" } : null),
+      dbl: acts.double_tap_action
+    };
+  }
+  _target(ev) {
+    const t = ev.target;
+    return t?.closest?.("[data-action], [data-entity], [data-key='__chips_expand']") || null;
+  }
+  _bindEvents(root) {
+    root.addEventListener("click", (ev) => this._onClick(ev));
+    root.addEventListener("dblclick", (ev) => {
+      const el = this._target(ev);
+      if (!el?.dataset.entity) return;
+      const { dbl } = this._actionsFor(el.dataset.key || "", el);
       if (!dbl) return;
       ev.preventDefault();
-      this._handleAction(dbl, entityId);
+      this._handleAction(dbl, el.dataset.entity, el.dataset.key, el);
     });
-    el.addEventListener("pointerdown", () => {
+    root.addEventListener("pointerdown", (ev) => {
+      const el = this._target(ev);
+      if (!el?.dataset.entity) return;
+      const { hold } = this._actionsFor(el.dataset.key || "", el);
       if (!hold) return;
-      held = false;
-      holdTimer = window.setTimeout(() => {
-        held = true;
-        this._handleAction(hold, entityId);
+      this._held = false;
+      this._clearHold();
+      this._holdEl = el;
+      this._holdTimer = window.setTimeout(() => {
+        this._held = true;
+        this._handleAction(hold, el.dataset.entity || "", el.dataset.key, el);
       }, 500);
     });
-    const clear = () => {
-      if (holdTimer) window.clearTimeout(holdTimer);
-      holdTimer = null;
+    root.addEventListener("pointerup", () => this._clearHold());
+    root.addEventListener("pointercancel", () => this._clearHold());
+    root.addEventListener("pointerleave", (ev) => {
+      if (ev.target === this._holdEl) this._clearHold();
+    }, true);
+    root.addEventListener("keydown", (ev) => this._onKeydown(ev));
+    root.addEventListener("pointermove", (ev) => this._onGraphPointer(ev));
+  }
+  _clearHold() {
+    if (this._holdTimer) window.clearTimeout(this._holdTimer);
+    this._holdTimer = null;
+    this._holdEl = null;
+  }
+  _onClick(ev) {
+    if (this._dialog && ev.target === this._dialog) {
+      this._dialog.close();
+      return;
+    }
+    const el = this._target(ev);
+    if (!el) return;
+    const action = el.dataset.action;
+    if (action) {
+      ev.preventDefault();
+      this._onDialogAction(action, el);
+      return;
+    }
+    ev.preventDefault();
+    if (this._held) {
+      this._held = false;
+      return;
+    }
+    const key = el.dataset.key || "";
+    if (key === "__chips_expand") {
+      this._chipsExpanded = !this._chipsExpanded;
+      this._renderSignature = null;
+      this._render(true);
+      return;
+    }
+    const { tap } = this._actionsFor(key, el);
+    this._handleAction(tap, el.dataset.entity || "", key, el);
+  }
+  _onKeydown(ev) {
+    const target = ev.target;
+    if (target?.classList.contains("graph-chart")) {
+      this._onGraphKey(ev);
+      return;
+    }
+    if ((ev.key === "Enter" || ev.key === " ") && target && target.tagName !== "BUTTON" && target.getAttribute("role") === "button") {
+      ev.preventDefault();
+      target.click();
+    }
+  }
+  // ---------------------------------------------------------------------------
+  // Graph popup
+  // ---------------------------------------------------------------------------
+  _openGraph(key, entityId, opener) {
+    const st = this._hass?.states?.[entityId];
+    if (!st) return;
+    const fallbackLabel = hasKey(`tile.${key}`) ? this.t(`tile.${key}`) : String(st.attributes.friendly_name || entityId);
+    const unit = this.conv(st, unitOf(st)).unit || unitOf(st);
+    this._graph = {
+      key,
+      entityId,
+      label: this.label(key, fallbackLabel),
+      range: "24h",
+      loading: true,
+      series: null,
+      window: { start: Date.now() - RANGE_MS["24h"], end: Date.now() },
+      unit,
+      opener,
+      cursor: -1
     };
-    el.addEventListener("pointerup", clear);
-    el.addEventListener("pointerleave", clear);
+    this._renderGraph();
+    if (this._dialog && !this._dialog.open) {
+      try {
+        this._dialog.showModal();
+      } catch {
+        this._dialog.setAttribute("open", "");
+      }
+    }
+    this._dialog?.querySelector(".graph-range[aria-checked='true']")?.focus();
+    void this._loadGraph();
   }
-  _compass(deg, card) {
-    const angle = Number.isFinite(deg) ? deg : 0;
-    const muted = !Number.isFinite(deg);
-    return `
-      <div class="compass" data-key="wind_direction" data-entity="${esc(this._st("wind_direction")?.entity_id || "")}">
-        <svg viewBox="0 0 100 100" class="compass-svg ${muted ? "muted" : ""}" aria-hidden="true">
-          <circle cx="50" cy="50" r="46" fill="none" stroke="currentColor" stroke-opacity="0.16" stroke-width="2"/>
-          <circle cx="50" cy="50" r="34" fill="none" stroke="currentColor" stroke-opacity="0.08" stroke-width="1"/>
-          <circle cx="50" cy="50" r="3" fill="currentColor"/>
-          <text x="50" y="16" text-anchor="middle" font-size="9" fill="currentColor">N</text>
-          <text x="50" y="94" text-anchor="middle" font-size="9" fill="currentColor">S</text>
-          <text x="10" y="54" text-anchor="middle" font-size="9" fill="currentColor">W</text>
-          <text x="90" y="54" text-anchor="middle" font-size="9" fill="currentColor">E</text>
-          <g transform="rotate(${angle} 50 50)">
-            <polygon points="50,12 55,48 50,42 45,48" fill="${iconColorVar("teal")}"/>
-          </g>
-        </svg>
-        <div class="compass-label">${card || "—"} ${Number.isFinite(deg) ? `${Math.round(deg)}°` : ""}</div>
+  _onDialogAction(action, el) {
+    if (!this._graph) return;
+    if (action === "graph-close") {
+      this._dialog?.close();
+    } else if (action === "graph-range") {
+      const range = el.dataset.range;
+      if (!RANGE_MS[range] || range === this._graph.range) return;
+      this._graph = { ...this._graph, range, loading: true, cursor: -1 };
+      this._renderGraph();
+      void this._loadGraph();
+    } else if (action === "graph-more-info") {
+      const id = this._graph.entityId;
+      this._dialog?.close();
+      this.dispatchEvent(new CustomEvent("hass-more-info", { bubbles: true, composed: true, detail: { entityId: id } }));
+    }
+  }
+  _onDialogClosed() {
+    const opener = this._graph?.opener;
+    this._graph = null;
+    this._graphToken++;
+    if (this._dialog) morph(this._dialog, "");
+    if (opener?.isConnected) opener.focus();
+  }
+  async _loadGraph() {
+    const g = this._graph;
+    if (!g || !this._hass) return;
+    const token = ++this._graphToken;
+    const cacheKey = `${g.entityId}|${g.range}`;
+    const cached = this._graphCache.get(cacheKey);
+    let series = null;
+    let window2 = { start: Date.now() - RANGE_MS[g.range], end: Date.now() };
+    if (cached && Date.now() - cached.at < 5 * 6e4) {
+      series = cached.series;
+      window2 = cached.window;
+    } else {
+      const st = this._hass.states[g.entityId];
+      const src = this._config?.units_source?.[g.entityId] || unitOf(st);
+      const target = this._config?.unit_system || "native";
+      const cv = (n) => convertValue(n, src, target).value ?? n;
+      try {
+        if (g.range !== "24h") {
+          const stats = await fetchStatistics(this._hass, [g.entityId], new Date(window2.start), new Date(window2.end), "hour");
+          const rows = stats?.[g.entityId] || [];
+          if (rows.length) series = seriesFromStatistics(rows);
+        }
+        if (!series || !series.points.length) {
+          const raw = await fetchHistoryRaw(this._hass, [g.entityId], new Date(window2.start), new Date(window2.end), false);
+          const parsed = ingestHistoryRaw(raw, { [g.entityId]: "v" }).v || [];
+          series = seriesFromHistory(parsed);
+        }
+      } catch {
+        series = { source: "history", points: [] };
+      }
+      series = {
+        source: series.source,
+        points: series.points.map((p) => ({
+          t: p.t,
+          v: cv(p.v),
+          ...p.min != null ? { min: cv(p.min) } : {},
+          ...p.max != null ? { max: cv(p.max) } : {}
+        }))
+      };
+      this._graphCache.set(cacheKey, { at: Date.now(), series, window: window2 });
+    }
+    if (token !== this._graphToken || !this._graph) return;
+    this._graph = { ...this._graph, loading: false, series, window: window2 };
+    this._renderGraph();
+  }
+  _fmtGraphTime(t, range) {
+    const d = new Date(t);
+    try {
+      return range === "24h" ? d.toLocaleTimeString(this.locale, { hour: "numeric", minute: "2-digit" }) : d.toLocaleString(this.locale, { weekday: "short", day: "numeric", hour: "numeric" });
+    } catch {
+      return d.toISOString();
+    }
+  }
+  _renderGraph() {
+    const g = this._graph;
+    if (!g || !this._dialog) return;
+    const { t } = this;
+    const unit = g.unit ? ` ${g.unit}` : "";
+    const val = (n) => `${fmtNum(n, Math.abs(n) >= 100 ? 0 : Math.abs(n) >= 10 ? 1 : 2)}${unit}`;
+    const ranges = ["24h", "7d", "30d"];
+    const stats = g.series ? graphStats(g.series) : null;
+    let body;
+    if (g.loading) {
+      body = `<div class="graph-empty" role="status">${esc(t("graph.loading"))}</div>`;
+    } else if (!g.series || !stats) {
+      body = `<div class="graph-empty" role="status">${esc(t("graph.empty"))}</div>`;
+    } else {
+      const summary = t("graph.summary", { min: val(stats.min), max: val(stats.max), avg: val(stats.avg) });
+      body = `
+        <div class="graph-chart" tabindex="0" role="img" aria-label="${esc(summary)}" aria-describedby="graph-readout">
+          ${graphSvg(g.series, g.window)}
+        </div>
+        <div class="graph-axis" aria-hidden="true">
+          <span>${esc(this._fmtGraphTime(g.window.start, g.range))}</span>
+          <span>${esc(this._fmtGraphTime(g.window.end, g.range))}</span>
+        </div>
+        <div class="graph-readout" id="graph-readout" aria-live="polite"></div>
+        <dl class="graph-stats">
+          <div><dt>${esc(t("graph.min"))}</dt><dd>${esc(val(stats.min))}</dd></div>
+          <div><dt>${esc(t("graph.avg"))}</dt><dd>${esc(val(stats.avg))}</dd></div>
+          <div><dt>${esc(t("graph.max"))}</dt><dd>${esc(val(stats.max))}</dd></div>
+        </dl>
+        <div class="graph-source">${esc(g.series.source === "statistics" ? t("graph.source_stats") : t("graph.source_history"))}</div>`;
+    }
+    const html = `<div class="graph-inner">
+      <div class="graph-head">
+        <h2 id="graph-title">${esc(t("graph.title", { name: g.label }))}</h2>
+        <button class="graph-icon-btn" data-action="graph-close" aria-label="${esc(t("graph.close"))}"><ha-icon icon="mdi:close" aria-hidden="true"></ha-icon></button>
       </div>
-    `;
+      <div class="graph-ranges" role="radiogroup" aria-label="${esc(t("graph.range_label"))}">
+        ${ranges.map((r) => `<button class="graph-range" role="radio" aria-checked="${r === g.range}" data-action="graph-range" data-range="${r}" tabindex="${r === g.range ? 0 : -1}">${esc(t(`graph.range_${r}`))}</button>`).join("")}
+      </div>
+      <div class="graph-body" aria-busy="${g.loading}">${body}</div>
+      <div class="graph-foot">
+        <button class="graph-more" data-action="graph-more-info">${esc(t("graph.more_info"))}</button>
+      </div>
+    </div>`;
+    morph(this._dialog, html);
+    this._paintGraphCursor();
   }
-  _sparkline(items) {
-    const vals = items.map((i) => i.value).filter((v) => v != null && v >= 0);
-    const max = Math.max(...vals, 0.01);
-    const bars = items.map((i) => {
-      const h = i.value == null ? 2 : Math.max(4, Math.round(i.value / max * 36));
-      const on = i.value != null && i.value > 0;
-      return `<div class="bar-col"><div class="bar ${on ? "on" : ""}" style="height:${h}px"></div><div class="bar-lab">${esc(i.label)}</div></div>`;
-    }).join("");
-    return `<div class="spark">${bars}</div>`;
+  _paintGraphCursor() {
+    const g = this._graph;
+    if (!g?.series || !this._dialog) return;
+    const line = this._dialog.querySelector(".graph-cursor");
+    const readout = this._dialog.querySelector(".graph-readout");
+    const p = g.series.points[g.cursor];
+    if (!line || !readout) return;
+    if (!p) {
+      line.setAttribute("x1", "-10");
+      line.setAttribute("x2", "-10");
+      readout.textContent = "";
+      return;
+    }
+    const x = (p.t - g.window.start) / Math.max(1, g.window.end - g.window.start) * GRAPH_W;
+    line.setAttribute("x1", x.toFixed(1));
+    line.setAttribute("x2", x.toFixed(1));
+    const unit = g.unit ? ` ${g.unit}` : "";
+    const range = p.min != null && p.max != null && p.max !== p.min ? ` (${fmtNum(p.min, 1)}–${fmtNum(p.max, 1)})` : "";
+    readout.textContent = `${this._fmtGraphTime(p.t, g.range)} · ${fmtNum(p.v, 2)}${unit}${range}`;
   }
-  _histSpark(key) {
-    if (this._config?.show_history_sparklines === false) return "";
-    const pts = this._history[key];
-    if (!pts?.length) return "";
-    return historyLineSpark(downsampleHistory(pts));
+  _onGraphPointer(ev) {
+    const g = this._graph;
+    const chart = ev.target?.closest?.(".graph-chart");
+    if (!g?.series || !chart) return;
+    const rect = chart.getBoundingClientRect();
+    if (!rect.width) return;
+    const idx = nearestPoint(g.series, g.window, (ev.clientX - rect.left) / rect.width);
+    if (idx !== g.cursor) {
+      g.cursor = idx;
+      this._paintGraphCursor();
+    }
   }
+  _onGraphKey(ev) {
+    const g = this._graph;
+    if (!g?.series?.points.length) return;
+    const last = g.series.points.length - 1;
+    const step = Math.max(1, Math.round(g.series.points.length / 48));
+    let next = g.cursor < 0 ? last : g.cursor;
+    if (ev.key === "ArrowLeft") next = Math.max(0, next - step);
+    else if (ev.key === "ArrowRight") next = Math.min(last, next + step);
+    else if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = last;
+    else return;
+    ev.preventDefault();
+    g.cursor = next;
+    this._paintGraphCursor();
+  }
+  // ---------------------------------------------------------------------------
+  // Data: pressure trend, forecast, history, records
+  // ---------------------------------------------------------------------------
   _trackPressure(value) {
     if (value == null) return pressureTrendMeta(null, null);
     if (this._prevPressure == null || Math.abs((this._prevPressure ?? 0) - value) > 1e-4) {
@@ -1815,8 +4404,6 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   }
   async _fetchForecastType(id, forecastType, token) {
     try {
-      if (this._hass?.connection?.subscribeMessage && forecastType === "daily") {
-      }
       const result = await this._hass?.connection?.sendMessagePromise?.({
         type: "call_service",
         domain: "weather",
@@ -1830,15 +4417,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return [];
     }
   }
-  _wantHourly() {
-    if (!this._config?.weather_entity) return false;
-    if (this._config.show_hourly_forecast === false) return false;
-    if (this._config.show_hourly_forecast === true) return true;
-    return true;
-  }
   async _ensureForecastSub() {
     const wantDaily = !!this._config?.show_forecast;
-    const wantHourly = this._wantHourly();
+    const wantHourly = this.wantHourly();
     const id = wantDaily || wantHourly ? this._config?.weather_entity : null;
     if (!id || !this._hass) {
       this._teardownForecast(true);
@@ -1874,8 +4455,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._forecastError = null;
     try {
       const attrDays = entityState(this._hass, id)?.attributes?.forecast;
-      if (Array.isArray(attrDays) && attrDays.length && !this._forecastDays.length) {
-        this._forecastDays = attrDays;
+      if (Array.isArray(attrDays) && attrDays.length && !this.forecastDays.length) {
+        this.forecastDays = attrDays;
       }
       let dailySettled = !wantDaily;
       let hourlySettled = !wantHourly;
@@ -1885,8 +4466,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
             const unsub = await this._hass.connection.subscribeMessage(
               (ev) => {
                 if (token !== this._forecastToken) return;
-                this._forecastDays = ev?.forecast || [];
-                this._forecastError = this._forecastDays.length ? null : "empty";
+                this.forecastDays = ev?.forecast || [];
+                this._forecastError = this.forecastDays.length ? null : "empty";
                 this._renderSignature = null;
                 this._render(true);
               },
@@ -1914,7 +4495,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
             const unsub = await this._hass.connection.subscribeMessage(
               (ev) => {
                 if (token !== this._forecastToken) return;
-                this._forecastHours = ev?.forecast || [];
+                this.forecastHours = ev?.forecast || [];
                 this._renderSignature = null;
                 this._render(true);
               },
@@ -1940,9 +4521,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         const days = await this._fetchForecastType(id, "daily", token);
         if (token !== this._forecastToken) return;
         if (days.length) {
-          this._forecastDays = days;
+          this.forecastDays = days;
           this._forecastError = null;
-        } else if (!this._forecastDays.length) {
+        } else if (!this.forecastDays.length) {
           this._forecastError = "empty";
         }
         dailySettled = true;
@@ -1950,12 +4531,12 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (wantHourly && !this._hourlyUnsub) {
         const hours = await this._fetchForecastType(id, "hourly", token);
         if (token !== this._forecastToken) return;
-        if (hours.length) this._forecastHours = hours;
+        if (hours.length) this.forecastHours = hours;
         hourlySettled = true;
       }
       if (token === this._forecastToken && dailySettled && hourlySettled) {
         const present = !!entityState(this._hass, id);
-        if (present || this._forecastUnsub || this._hourlyUnsub || this._forecastDays.length || this._forecastHours.length) {
+        if (present || this._forecastUnsub || this._hourlyUnsub || this.forecastDays.length || this.forecastHours.length) {
           this._forecastReadyKey = subKey;
           this._forecastAbsentKey = null;
           this._forecastRetryAt = 0;
@@ -1970,120 +4551,42 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (token === this._forecastToken) this._forecastPending = false;
     }
   }
-  _historyHours() {
-    return Math.min(48, Math.max(6, Number(this._config?.history_hours) || 24));
-  }
-  _wantPrecipTimeline() {
-    return this._config?.show_precip_timeline !== false && !this._config?.hide_rain;
-  }
-  _wantComfort() {
-    return this._config?.show_comfort !== false && !this._config?.hide_comfort;
-  }
-  _wantRecords() {
-    return this._config?.show_records !== false && !this._config?.hide_records;
-  }
-  _recordsDays() {
-    return this._config?.records_period === "year" ? 365 : 30;
-  }
-  _parseHistoryPoint(rawState, changed) {
-    const t = typeof changed === "number" ? changed > 1e12 ? changed : changed * 1e3 : changed ? new Date(String(changed)).getTime() : NaN;
-    if (!Number.isFinite(t)) return null;
-    if (typeof rawState === "string") {
-      const low = rawState.toLowerCase();
-      if (low === "unavailable" || low === "unknown") {
-        return { state: Number.NaN, last_changed: t, unavailable: true };
-      }
-    }
-    let state = num(rawState);
-    if (state == null && typeof rawState === "string") {
-      const parsed = parseWindDirection({
-        state: rawState
-      });
-      state = parsed.deg;
-    }
-    return state == null ? null : { state, last_changed: t };
-  }
-  _ingestHistoryRaw(raw, keyById) {
-    const next = {};
-    const asRecord = raw;
-    if (Array.isArray(asRecord)) {
-      for (const series of asRecord) {
-        if (!Array.isArray(series) || !series.length) continue;
-        const id = series[0]?.entity_id || "";
-        const key = keyById[id];
-        if (!key) continue;
-        next[key] = series.map((p) => this._parseHistoryPoint(p.state, p.last_changed)).filter((p) => !!p);
-      }
-    } else if (asRecord && typeof asRecord === "object") {
-      for (const [id, series] of Object.entries(asRecord)) {
-        const key = keyById[id];
-        if (!key || !Array.isArray(series)) continue;
-        next[key] = series.map((p) => this._parseHistoryPoint(p.s ?? p.state, p.lu ?? p.last_changed)).filter((p) => !!p);
-      }
-    }
-    return next;
-  }
-  async _fetchHistoryRaw(entityIds, start, end, significantOnly) {
-    if (!this._hass) return null;
-    if (this._hass.connection?.sendMessagePromise) {
-      return this._hass.connection.sendMessagePromise({
-        type: "history/history_during_period",
-        start_time: start.toISOString(),
-        end_time: end.toISOString(),
-        significant_changes_only: significantOnly,
-        minimal_response: true,
-        no_attributes: true,
-        entity_ids: entityIds
-      });
-    }
-    if (this._hass.callApi) {
-      const sig = significantOnly ? 1 : 0;
-      const q = `history/period/${start.toISOString()}?filter_entity_id=${entityIds.join(",")}&end_time=${encodeURIComponent(end.toISOString())}&significant_changes_only=${sig}&minimal_response`;
-      return this._hass.callApi("GET", q);
-    }
-    return null;
-  }
   async _ensureHistory() {
     if (!this._hass || !this._config) return;
     const needSparks = this._config.show_history_sparklines !== false;
     const needRose = this._config.show_wind_rose !== false;
-    const needPrecip = this._wantPrecipTimeline();
-    const needComfort = this._wantComfort();
+    const needPrecip = this.wantPrecipTimeline();
+    const needComfort = this.wantComfort();
     if (!needSparks && !needRose && !needPrecip && !needComfort) return;
     if (this._historyPending) return;
     if (this._historyFetchedAt && Date.now() - this._historyFetchedAt < 5 * 60 * 1e3) return;
-    const hours = this._historyHours();
+    const hours = this.historyHours();
     const end = /* @__PURE__ */ new Date();
     const start = new Date(end.getTime() - hours * 3600 * 1e3);
-    const entityIds = [];
     const keyById = {};
     const addKey = (key) => {
       const id = this._config?.entities?.[key];
-      if (!id) return;
-      entityIds.push(id);
-      keyById[id] = key;
+      if (id) keyById[id] = key;
     };
-    if (needSparks) {
-      for (const key of HISTORY_SPARK_KEYS) addKey(key);
-    }
+    if (needSparks) for (const key of HISTORY_SPARK_KEYS) addKey(key);
     if (needRose) addKey("wind_direction");
     if (needPrecip) addKey("rain_rate");
     if (needComfort) {
       addKey("temperature");
       addKey("humidity");
     }
-    const unique = [...new Set(entityIds)];
+    const unique = Object.keys(keyById);
     if (!unique.length) return;
     this._historyPending = true;
     const token = ++this._historyToken;
     try {
-      const raw = await this._fetchHistoryRaw(unique, start, end, false);
+      const raw = await fetchHistoryRaw(this._hass, unique, start, end, false);
       if (raw == null || token !== this._historyToken) return;
-      const next = this._ingestHistoryRaw(raw, keyById);
-      this._precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
-      this._comfortTemp = needComfort ? next.temperature || [] : [];
-      this._comfortHum = needComfort ? next.humidity || [] : [];
-      this._historyWindow = { start: start.getTime(), end: end.getTime() };
+      const next = ingestHistoryRaw(raw, keyById);
+      this.precipBars = needPrecip && next.rain_rate?.length ? precipTimelineBars(next.rain_rate, hours, Math.min(36, Math.max(12, hours))) : null;
+      this.comfortTemp = needComfort ? next.temperature || [] : [];
+      this.comfortHum = needComfort ? next.humidity || [] : [];
+      this.historyWindow = { start: start.getTime(), end: end.getTime() };
       for (const [key, pts] of Object.entries(next)) {
         if (key === "rain_rate") {
           next[key] = pts.length > 1200 ? pts.slice(-1200) : pts;
@@ -2093,7 +4596,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
           next[key] = downsampleHistory(pts, 72);
         }
       }
-      this._history = next;
+      this.history = next;
       this._historyFetchedAt = Date.now();
       this._renderSignature = null;
       this._render(true);
@@ -2103,42 +4606,66 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (token === this._historyToken) this._historyPending = false;
     }
   }
-  async _ensureRecordsHistory() {
-    if (!this._hass || !this._config || !this._wantRecords()) return;
+  /**
+   * Record book from long-term statistics (kept forever, hourly min/max), so a
+   * year of records survives the recorder's 10-day raw-history purge. Sensors
+   * without a `state_class` have no statistics and fall back to raw history.
+   * The last couple of hours always come from raw history, because statistics
+   * only cover fully compiled hours.
+   */
+  async _ensureRecords() {
+    if (!this._hass || !this._config || !this.wantRecords()) return;
     if (this._recordsPending) return;
     if (this._recordsFetchedAt && Date.now() - this._recordsFetchedAt < 15 * 60 * 1e3) return;
-    const end = /* @__PURE__ */ new Date();
-    const start = new Date(end.getTime() - this._recordsDays() * 864e5);
-    const entityIds = [];
     const keyById = {};
     for (const key of ["temperature", "wind_gust", "rain_rate", "rain_today"]) {
       const id = this._config.entities?.[key];
-      if (!id) continue;
-      entityIds.push(id);
-      keyById[id] = key;
+      if (id && this._hass.states[id]) keyById[id] = key;
     }
-    const unique = [...new Set(entityIds)];
-    if (!unique.length) return;
+    const ids = Object.keys(keyById);
+    if (!ids.length) return;
     this._recordsPending = true;
     const token = ++this._recordsToken;
+    const end = /* @__PURE__ */ new Date();
+    const days = this._recordsDays();
+    const start = new Date(end.getTime() - days * 864e5);
+    const period = days > 60 ? "day" : "hour";
     try {
-      const raw = await this._fetchHistoryRaw(unique, start, end, true);
-      if (raw == null || token !== this._recordsToken) return;
-      const full = this._ingestHistoryRaw(raw, keyById);
-      this._recordsBook = buildRecordBook(full);
-      const slim = {};
-      for (const [key, pts] of Object.entries(full)) {
-        if (key === "temperature") {
-          const highs = downsampleHistoryExtrema(pts, 120, "max");
-          const lows = downsampleHistoryExtrema(pts, 120, "min");
-          const byTs = /* @__PURE__ */ new Map();
-          for (const p of [...highs, ...lows]) byTs.set(p.last_changed, p);
-          slim[key] = [...byTs.values()].sort((a, b) => a.last_changed - b.last_changed);
-        } else {
-          slim[key] = downsampleHistoryExtrema(pts, 240, "max");
-        }
+      let stats = null;
+      try {
+        stats = await fetchStatistics(this._hass, ids, start, end, period);
+      } catch {
+        stats = null;
       }
-      this._recordsHistory = slim;
+      if (token !== this._recordsToken) return;
+      const statsByKey = {};
+      const missing = [];
+      for (const id of ids) {
+        const rows = stats?.[id] || [];
+        if (rows.length) statsByKey[keyById[id]] = rows;
+        else missing.push(id);
+      }
+      const recent = {};
+      if (missing.length) {
+        const raw = await fetchHistoryRaw(this._hass, missing, start, end, true);
+        if (token !== this._recordsToken) return;
+        Object.assign(recent, ingestHistoryRaw(raw, keyById));
+      }
+      const withStats = ids.filter((id) => !missing.includes(id));
+      if (withStats.length) {
+        const since = new Date(end.getTime() - 2 * 36e5);
+        const raw = await fetchHistoryRaw(this._hass, withStats, since, end, false);
+        if (token !== this._recordsToken) return;
+        Object.assign(recent, ingestHistoryRaw(raw, keyById));
+      }
+      for (const id of ids) {
+        const n = num(this._hass.states[id]?.state);
+        if (n == null) continue;
+        const key = keyById[id];
+        (recent[key] || (recent[key] = [])).push({ state: n, last_changed: Date.now() });
+      }
+      this.recordsBook = recordBookFromStatistics(statsByKey, buildRecordBook(recent));
+      this.recordsSource = missing.length ? "history" : "statistics";
       this._recordsFetchedAt = Date.now();
       this._renderSignature = null;
       this._render(true);
@@ -2148,439 +4675,59 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (token === this._recordsToken) this._recordsPending = false;
     }
   }
-  _sectionTitle(label, compact) {
-    return compact ? "" : `<div class="section-label"><span>${esc(label)}</span></div>`;
-  }
-  _wrapSection(id, compact, body) {
-    if (!body) return "";
-    return `<section class="section" data-section="${id}">${this._sectionTitle(SECTION_LABELS[id], compact)}${body}</section>`;
-  }
-  _tile(key, label, st, value, icon, color, spark = "") {
-    if (!st && !this._config?.show_empty) return "";
-    const entityId = st?.entity_id || "";
-    return `
-      <button class="tile" data-key="${esc(key)}" data-entity="${esc(entityId)}" ${entityId ? "" : "disabled"}>
-        <ha-icon icon="${icon}" style="color:${iconColorVar(color)}"></ha-icon>
-        <div class="tile-value">${esc(String(value))}</div>
-        <div class="tile-label">${esc(label)}</div>
-        ${spark}
-      </button>
-    `;
-  }
-  _alertsHtml() {
-    if (this._config?.show_alerts === false) return "";
-    const weather = entityState(this._hass, this._config?.weather_entity);
-    const alertEnt = entityState(this._hass, this._config?.alert_entity);
-    const alerts = collectAlerts(weather, alertEnt).slice(0, 3);
-    if (!alerts.length) return "";
-    const entityId = this._config?.alert_entity || this._config?.weather_entity || "";
-    return `<div class="alerts">${alerts.map((a) => {
-      const sev = alertSeverityColor(a.severity);
-      const title = a.title || a.event || "Weather alert";
-      const desc = a.description || "";
-      return `<button class="alert sev-${sev}" data-key="alert" data-entity="${esc(entityId)}">
-          <ha-icon icon="mdi:alert" style="color:${iconColorVar(sev)}"></ha-icon>
-          <div>
-            <div class="alert-title">${esc(title)}</div>
-            ${desc ? `<div class="alert-desc">${esc(desc)}</div>` : ""}
-          </div>
-        </button>`;
-    }).join("")}</div>`;
-  }
-  _chips(temp, feels, humidity, today, wind, pressure, uv, gust, raining) {
-    const t = this._conv(temp, "°F");
-    const f = this._conv(feels, "°F");
-    const primary = [
-      { key: "temperature", st: temp, icon: "mdi:thermometer", text: t.value == null ? "—" : `${Math.round(t.value)}°` },
-      { key: "feels_like", st: feels, icon: "mdi:sun-thermometer", text: f.value == null ? "—" : `${Math.round(f.value)}°` },
-      { key: "humidity", st: humidity, icon: "mdi:water-percent", text: num(humidity?.state) == null ? "—" : `${Math.round(num(humidity?.state))}%` },
-      { key: "rain_today", st: today, icon: raining ? "mdi:weather-pouring" : "mdi:weather-rainy", text: this._fmt("rain_today", today, 2, "in") },
-      { key: "wind_speed", st: wind, icon: "mdi:weather-windy", text: this._fmt("wind_speed", wind, 0, "mph") }
-    ].filter((c) => !!c.st);
-    const extra = [
-      { key: "pressure", st: pressure, icon: "mdi:gauge", text: this._fmt("pressure", pressure, 2, "inHg") },
-      { key: "uv", st: uv, icon: "mdi:weather-sunny-alert", text: num(uv?.state) == null ? "—" : `${fmtNum(num(uv?.state), 0)} UV` },
-      { key: "wind_gust", st: gust, icon: "mdi:windsock", text: this._fmt("wind_gust", gust, 0, "mph") }
-    ].filter((c) => !!c.st);
-    const chipHtml = (c) => `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st.entity_id)}"><ha-icon icon="${c.icon}"></ha-icon><span>${esc(c.text)}</span></button>`;
-    return `<div class="chips-bar ${this._chipsExpanded ? "expanded" : ""}">
-      <div class="chips">
-        ${primary.map(chipHtml).join("")}
-        ${extra.length ? `<button class="chip expand" data-key="__chips_expand" data-entity="" title="More"><ha-icon icon="mdi:chevron-down"></ha-icon><span>${this._chipsExpanded ? "Less" : "More"}</span></button>` : ""}
-      </div>
-      ${extra.length ? `<div class="chips-extra">${extra.map(chipHtml).join("")}</div>` : ""}
-    </div>`;
-  }
-  _hourlyHtml() {
-    if (!this._wantHourly()) return "";
-    const id = this._config?.weather_entity;
-    if (!id) return "";
-    const hoursWanted = Math.min(24, Math.max(6, Number(this._config?.hourly_forecast_hours) || 24));
-    const hours = (this._forecastHours || []).slice(0, hoursWanted);
-    if (!hours.length) return "";
-    const st = entityState(this._hass, id);
-    const target = this._config?.unit_system || "native";
-    const tempUnit = st?.attributes?.temperature_unit || "";
-    return `
-      <div class="forecast hourly">
-        ${hours.map((h) => {
-      const when = h.datetime ? new Date(h.datetime) : null;
-      const label = when && !Number.isNaN(when.getTime()) ? when.toLocaleTimeString(void 0, { hour: "numeric" }) : "—";
-      const temp = h.temperature != null ? convertValue(h.temperature, tempUnit, target) : null;
-      const icon = WEATHER_ICONS[h.condition || ""] || "mdi:weather-partly-cloudy";
-      const pop = h.precipitation_probability != null ? Math.round(Number(h.precipitation_probability)) : null;
-      return `<div class="fhour" data-key="forecast" data-entity="${esc(id)}">
-              <div class="fhour-name">${esc(label)}</div>
-              <ha-icon icon="${icon}"></ha-icon>
-              <div class="fhour-temp">${temp?.value != null ? Math.round(temp.value) : "—"}°</div>
-              ${pop != null ? `<div class="fhour-pop">${pop}%</div>` : ""}
-            </div>`;
-    }).join("")}
-      </div>
-    `;
-  }
-  _forecastHtml() {
-    const hourly = this._hourlyHtml();
-    const showDaily = !!this._config?.show_forecast;
-    const hourlyExplicit = this._config?.show_hourly_forecast === true;
-    if (!showDaily && !hourly && !hourlyExplicit) return "";
-    const id = this._config?.weather_entity;
-    if (!id) {
-      return `${hourly}<div class="hint">Pick a weather entity for forecast.</div>`;
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+  _watchedSignature() {
+    const c = this._config || {};
+    const ids = Object.values(c.entities || {}).filter(Boolean);
+    for (const extra of [c.weather_entity, c.alert_entity, c.sun_entity, c.moon_entity]) {
+      if (extra) ids.push(extra);
     }
-    const st = entityState(this._hass, id);
-    if (!st) return `${hourly}<div class="hint">Weather entity ${esc(id)} is missing.</div>`;
-    let daily = "";
-    if (showDaily) {
-      const daysWanted = Math.min(7, Math.max(1, Number(this._config?.forecast_days) || 5));
-      const days = (this._forecastDays || st.attributes.forecast || []).slice(0, daysWanted);
-      if (!days.length) {
-        daily = `<div class="hint">Waiting for daily forecast from ${esc(id)}…</div>`;
-      } else {
-        const target = this._config?.unit_system || "native";
-        const tempUnit = st.attributes.temperature_unit || "";
-        daily = `
-          <div class="forecast">
-            ${days.map((d) => {
-          const when = d.datetime ? new Date(d.datetime) : null;
-          const day = when && !Number.isNaN(when.getTime()) ? when.toLocaleDateString(void 0, { weekday: "short" }) : "—";
-          const hi = d.temperature != null ? convertValue(d.temperature, tempUnit, target) : null;
-          const lo = d.templow != null ? convertValue(d.templow, tempUnit, target) : null;
-          const icon = WEATHER_ICONS[d.condition || ""] || "mdi:weather-partly-cloudy";
-          const pop = d.precipitation_probability != null ? Math.round(Number(d.precipitation_probability)) : null;
-          return `<div class="fday" data-key="forecast" data-entity="${esc(id)}">
-                  <div class="fday-name">${esc(day)}</div>
-                  <ha-icon icon="${icon}"></ha-icon>
-                  <div class="fday-temp">${hi?.value != null ? Math.round(hi.value) : "—"}°${lo?.value != null ? ` / ${Math.round(lo.value)}°` : ""}</div>
-                  ${pop != null ? `<div class="fday-pop">${pop}%</div>` : ""}
-                </div>`;
-        }).join("")}
-          </div>
-        `;
+    const parts = ids.map((id) => {
+      const st = this._hass?.states?.[id];
+      if (!st) return `${id}:missing`;
+      return `${id}:${st.state}:${st.last_updated || ""}:${st.last_reported || ""}`;
+    });
+    if (c.prefix && !c.hide_health && this._hass) {
+      for (const st of Object.values(this._hass.states)) {
+        if (st.attributes?.device_class === "battery" && st.entity_id.includes(`.${c.prefix}_`)) {
+          parts.push(`${st.entity_id}:${st.state}`);
+        }
       }
     }
-    return `${hourly}${daily}`;
-  }
-  _precipTimelineHtml() {
-    if (!this._wantPrecipTimeline()) return "";
-    const hours = this._historyHours();
-    const bars = this._precipBars || precipTimelineBars(this._history.rain_rate || [], hours, Math.min(36, Math.max(12, hours)));
-    if (!bars.length || !this._precipBars && !(this._history.rain_rate || []).length) return "";
-    const peak = Math.max(...bars.map((b) => b.value), 0);
-    const peakFmt = peak > 0 ? fmtNum(peak, 2) : "0";
-    return `<div class="precip-timeline" data-key="rain_rate" data-entity="${esc(this._config?.entities?.rain_rate || "")}">
-      <div class="precip-timeline-top">
-        <span>Precipitation timeline</span>
-        <span class="precip-timeline-meta">${hours}h · peak ${esc(peakFmt)}</span>
-      </div>
-      ${precipTimelineSvg(bars)}
-    </div>`;
-  }
-  _recordsHtml(ctx) {
-    const book = this._recordsBook || buildRecordBook(this._recordsHistory);
-    const period = this._config?.records_period === "year" ? "Year" : "Month";
-    const target = this._config?.unit_system || "native";
-    const tempSrc = this._conv(ctx.temp, "°F").src || "°F";
-    const gustSrc = this._conv(ctx.gust || ctx.maxGust, "mph").src || "mph";
-    const rateSrc = this._conv(ctx.rate, "in/h").src || "in/h";
-    const rainSrc = this._conv(ctx.today, "in").src || "in";
-    const fmtTemp = (ex) => {
-      if (!ex) return { value: "—", when: "" };
-      const c = convertValue(ex.value, tempSrc, target);
-      return {
-        value: `${c.value == null ? "—" : Math.round(c.value)}°`,
-        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
-      };
-    };
-    const fmtGust = (ex) => {
-      if (!ex) return { value: "—", when: "" };
-      const c = convertValue(ex.value, gustSrc, target);
-      return {
-        value: c.value == null ? "—" : `${fmtNum(c.value, 1)} ${esc(c.unit || "mph")}`,
-        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
-      };
-    };
-    const fmtRate = (ex) => {
-      if (!ex) return { value: "—", when: "" };
-      const c = convertValue(ex.value, rateSrc, target);
-      return {
-        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "")}`.trim(),
-        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
-      };
-    };
-    const fmtRain = (ex) => {
-      if (!ex) return { value: "—", when: "" };
-      const c = convertValue(ex.value, rainSrc, target);
-      return {
-        value: c.value == null ? "—" : `${fmtNum(c.value, 2)} ${esc(c.unit || "in")}`,
-        when: relativeTime(new Date(ex.at), this._hass?.locale?.language)
-      };
-    };
-    const hot = fmtTemp(book.hottest);
-    const cold = fmtTemp(book.coldest);
-    const gust = fmtGust(book.peakGust);
-    const rate = fmtRate(book.peakRainRate);
-    const wet = fmtRain(book.wettestDay);
-    const setHot = isRecordSetToday(book.hottest);
-    const setCold = isRecordSetToday(book.coldest);
-    const setGust = isRecordSetToday(book.peakGust);
-    const setRate = isRecordSetToday(book.peakRainRate);
-    const setWet = isRecordSetToday(book.wettestDay);
-    const tile = (label, value, when, set) => `
-      <div class="record-tile ${set ? "set" : ""}">
-        <div class="record-label">${esc(label)}</div>
-        <div class="record-value">${value}</div>
-        ${when ? `<div class="record-when">${esc(when)}</div>` : ""}
-        ${set ? `<span class="record-badge">Set today</span>` : ""}
-      </div>`;
-    if (!book.hottest && !book.coldest && !book.peakGust && !book.peakRainRate && !book.wettestDay) {
-      return `<div class="hint">Record book needs history for temperature, gust, or rain sensors (${period.toLowerCase()} window).</div>`;
-    }
-    return `<div class="records-grid" title="${esc(period)} extremes">
-      ${tile(`Hottest · ${period}`, hot.value, hot.when, setHot)}
-      ${tile(`Coldest · ${period}`, cold.value, cold.when, setCold)}
-      ${tile(`Peak gust · ${period}`, gust.value, gust.when, setGust)}
-      ${tile(`Peak rain rate · ${period}`, rate.value, rate.when, setRate)}
-      ${tile(`Wettest day · ${period}`, wet.value, wet.when, setWet)}
-    </div>`;
-  }
-  _comfortHtml() {
-    const band = comfortBandFromConfig(this._config);
-    const src = this._conv(this._st("temperature"), "°F").src || "°F";
-    const tempPts = (this._comfortTemp.length ? this._comfortTemp : this._history.temperature || []).map((p) => {
-      if (p.unavailable) return { state: Number.NaN, last_changed: p.last_changed, unavailable: true };
-      const cmp = thresholdCompareValue(p.state, src);
-      return cmp == null ? null : { state: cmp, last_changed: p.last_changed };
-    }).filter((p) => !!p);
-    const humPts = this._comfortHum.length ? this._comfortHum : this._history.humidity || [];
-    const win = this._historyWindow || {
-      start: Date.now() - this._historyHours() * 36e5,
-      end: Date.now()
-    };
-    const stats = comfortStats(tempPts, humPts, band, win);
-    if (!stats.samples.length && !(stats.hoursTotal > 0)) {
-      return `<div class="hint">Comfort zones need temperature and humidity history.</div>`;
-    }
-    const target = this._config?.unit_system || "native";
-    const lo = convertValue(band.tempMin, "°F", target);
-    const hi = convertValue(band.tempMax, "°F", target);
-    const bandLabel = `${lo.value == null ? "—" : Math.round(lo.value)}–${hi.value == null ? "—" : Math.round(hi.value)}${lo.unit || "°"} · ${band.humidityMin}–${band.humidityMax}% RH`;
-    const pct = stats.pct == null ? "—" : `${stats.pct}%`;
-    return `<div class="comfort-panel">
-      <div class="comfort-top">
-        <div class="comfort-title">Hours in comfort</div>
-        <div class="comfort-pct">${esc(pct)}</div>
-      </div>
-      <div class="comfort-track"><div class="comfort-fill" style="width:${stats.pct == null ? 0 : Math.min(100, stats.pct)}%"></div></div>
-      <div class="comfort-meta">${fmtNum(stats.hoursIn, 1)}h of ${fmtNum(stats.hoursTotal, 1)}h in band · ${esc(bandLabel)}</div>
-      ${comfortScatterSvg(stats.samples, band)}
-      <div class="comfort-axes"><span>Cooler</span><span>Temp →</span><span>Warmer</span></div>
-    </div>`;
-  }
-  _soilTiles() {
-    const parts = [];
-    for (let i = 1; i <= 8; i++) {
-      const mKey = `soil_moisture_${i}`;
-      const tKey = `soil_temperature_${i}`;
-      const mSt = this._st(mKey);
-      const tSt = this._st(tKey);
-      parts.push(
-        this._tile(
-          mKey,
-          this._label(mKey, `Soil ${i}`),
-          mSt,
-          num(mSt?.state) == null ? "—" : `${Math.round(num(mSt?.state))}%`,
-          "mdi:water",
-          this._color(mKey, num(mSt?.state), "green")
-        )
-      );
-      parts.push(
-        this._tile(
-          tKey,
-          this._label(tKey, `Soil ${i} °`),
-          tSt,
-          tSt ? `${fmtNum(this._conv(tSt, "°F").value, 1)}°` : "—",
-          "mdi:thermometer",
-          this._color("temperature", num(tSt?.state), "amber", this._conv(tSt, "°F").src || "°F")
-        )
-      );
-    }
-    const leaf = this._st("leaf_wetness");
     parts.push(
-      this._tile(
-        "leaf_wetness",
-        this._label("leaf_wetness", "Leaf wet"),
-        leaf,
-        num(leaf?.state) == null ? "—" : `${Math.round(num(leaf?.state))}%`,
-        "mdi:leaf",
-        this._color("leaf_wetness", num(leaf?.state), "cyan")
-      )
+      `cfg:${this._configStamp}|lang:${this._hass?.locale?.language}|chips:${this._chipsExpanded}|hist:${this._historyFetchedAt}|rec:${this._recordsFetchedAt}`,
+      `fc:${this.forecastDays.length}:${this.forecastHours.length}:${this._forecastError || ""}`
     );
-    return parts.join("");
+    return parts.join("|");
   }
-  _renderSection(id, ctx) {
-    const compact = ctx.compact;
-    switch (id) {
-      case "conditions": {
-        if (!ctx.showConditions) return "";
-        const body = `<div class="grid">
-          ${this._tile("temperature", this._label("temperature", "Outdoor"), ctx.temp, ctx.t.value == null ? "—" : `${fmtNum(ctx.t.value, 1)}${ctx.tempUnit.includes("°") ? ctx.tempUnit : "°"}`, "mdi:thermometer", ctx.tColor, this._histSpark("temperature"))}
-          ${this._tile("feels_like", this._label("feels_like", "Feels like"), ctx.feels, ctx.f.value == null ? "—" : `${fmtNum(ctx.f.value, 1)}°`, "mdi:sun-thermometer-outline", this._color("feels_like", ctx.f.raw, ctx.tColor, ctx.f.src))}
-          ${this._tile("temp_high", this._label("temp_high", "High"), ctx.high, ctx.hi.value == null ? "—" : `${Math.round(ctx.hi.value)}°`, "mdi:thermometer-high", "orange")}
-          ${this._tile("temp_low", this._label("temp_low", "Low"), ctx.low, ctx.lo.value == null ? "—" : `${Math.round(ctx.lo.value)}°`, "mdi:thermometer-low", "blue")}
-          ${this._tile("humidity", this._label("humidity", "Humidity"), ctx.humidity, ctx.h == null ? "—" : `${Math.round(ctx.h)}${esc(this._unitStr("humidity", ctx.humidity, "%"))}`, "mdi:water-percent", this._color("humidity", ctx.h, "blue"), this._histSpark("humidity"))}
-          ${this._tile("dew_point", this._label("dew_point", "Dew point"), ctx.dew, ctx.d.value == null ? "—" : `${fmtNum(ctx.d.value, 1)}°`, "mdi:molecule", this._color("dew_point", ctx.d.raw, "blue", ctx.d.src))}
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "wind": {
-        if (!ctx.showWind) return "";
-        const rosePts = this._history.wind_direction || [];
-        const rose = this._config?.show_wind_rose !== false && rosePts.length ? `<div class="wind-rose" data-key="wind_direction" data-entity="${esc(ctx.wdir?.entity_id || "")}">
-              ${windRoseSvg(windRoseBins(rosePts.map((p) => p.state)))}
-              <div class="wind-rose-label">${this._historyHours()}h rose</div>
-            </div>` : "";
-        const body = `<div class="wind-row ${rose ? "with-rose" : ""}">
-          ${this._compass(ctx.deg, ctx.card)}
-          ${rose}
-          <div class="grid wind-grid">
-            ${this._tile("wind_speed", this._label("wind_speed", ctx.bf != null ? `Speed · B${ctx.bf}` : "Speed"), ctx.wind, ctx.ws.value == null ? "—" : `${fmtNum(ctx.ws.value, 1)} ${esc(this._unitStr("wind_speed", ctx.wind, ctx.ws.unit || "mph"))}`, "mdi:weather-windy", this._color("wind_speed", ctx.ws.raw, "teal", ctx.ws.src || "mph"), this._histSpark("wind_speed"))}
-            ${this._tile("wind_gust", this._label("wind_gust", "Gust"), ctx.gust, ctx.wg.value == null ? "—" : `${fmtNum(ctx.wg.value, 1)}`, "mdi:windsock", this._color("wind_gust", ctx.wg.raw, "teal", ctx.wg.src || "mph"))}
-            ${this._tile("max_gust", this._label("max_gust", "Max gust"), ctx.maxGust, num(ctx.maxGust?.state) == null ? "—" : this._fmt("max_gust", ctx.maxGust, 1, "mph"), "mdi:weather-windy-variant", "teal")}
-          </div>
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "rain": {
-        if (!ctx.showRain) return "";
-        const normal = num(this._config?.rain_month_normal);
-        const monthVal = this._conv(ctx.month, "in").value;
-        const progress = rainMonthProgress(monthVal, normal);
-        const daysSince = daysSinceTimestamp(ctx.lastRain?.state);
-        const goal = progress.pct != null ? `<div class="rain-goal">
-              <div class="rain-goal-top">
-                <span>Month vs normal</span>
-                <span>${fmtNum(monthVal, 2)} / ${fmtNum(normal, 2)}</span>
-              </div>
-              <div class="rain-goal-track"><div class="rain-goal-fill" style="width:${Math.min(100, progress.pct)}%"></div></div>
-              <div class="rain-goal-meta">${esc(progress.label)}${daysSince != null ? ` · ${daysSince < 1 ? "<1" : fmtNum(daysSince, 0)} day${daysSince >= 1.5 ? "s" : ""} since rain` : ""}</div>
-            </div>` : daysSince != null ? `<div class="rain-goal"><div class="rain-goal-top"><span>Days since rain</span><span>${daysSince < 1 ? "<1" : fmtNum(daysSince, 0)}</span></div></div>` : "";
-        const body = `
-          ${goal}
-          ${this._precipTimelineHtml()}
-          ${this._sparkline([
-          { label: "T", value: num(ctx.today?.state) },
-          { label: "E", value: num(ctx.event?.state) },
-          { label: "W", value: num(ctx.week?.state) },
-          { label: "M", value: num(ctx.month?.state) },
-          { label: "Y", value: num(ctx.year?.state) }
-        ])}
-          <div class="grid">
-            ${this._tile("rain_rate", this._label("rain_rate", "Rate"), ctx.rate, ctx.rr.value == null ? "—" : `${fmtNum(ctx.rr.value, 2)} ${esc(this._unitStr("rain_rate", ctx.rate, ctx.rr.unit || ""))}`.trim(), "mdi:weather-rainy", ctx.raining ? "blue" : "grey")}
-            ${this._tile("rain_today", this._label("rain_today", "Today"), ctx.today, this._fmt("rain_today", ctx.today, 2, "in"), "mdi:cup-water", (num(ctx.today?.state) ?? 0) > 0 ? "cyan" : "grey")}
-            ${this._tile("rain_event", this._label("rain_event", "Event"), ctx.event, this._fmt("rain_event", ctx.event, 2, "in"), "mdi:weather-pouring", (num(ctx.event?.state) ?? 0) > 0 ? "blue" : "grey")}
-            ${this._tile("rain_week", this._label("rain_week", "Week"), ctx.week, this._fmt("rain_week", ctx.week, 2, "in"), "mdi:calendar-week", (num(ctx.week?.state) ?? 0) > 0 ? "blue" : "grey")}
-            ${this._tile("rain_month", this._label("rain_month", "Month"), ctx.month, this._fmt("rain_month", ctx.month, 2, "in"), "mdi:calendar-month", (num(ctx.month?.state) ?? 0) > 0 ? "blue" : "grey")}
-            ${this._tile("rain_year", this._label("rain_year", "Year"), ctx.year, this._fmt("rain_year", ctx.year, 2, "in"), "mdi:calendar-star", (num(ctx.year?.state) ?? 0) > 0 ? "blue" : "grey")}
-            ${this._tile("last_rain", this._label("last_rain", "Last rain"), ctx.lastRain, formatLastRain(ctx.lastRain, this._hass), "mdi:clock-outline", "blue")}
-          </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "sun": {
-        if (!ctx.showSun) return "";
-        const body = `<div class="grid">
-          ${this._tile("uv", this._label("uv", ctx.uvm.label), ctx.uv, ctx.uvn == null ? "—" : `${fmtNum(ctx.uvn, 0)}`, "mdi:weather-sunny-alert", ctx.uvm.color)}
-          ${this._tile("irradiance", this._label("irradiance", "Solar"), ctx.irr, num(ctx.irr?.state) == null ? "—" : `${fmtNum(num(ctx.irr?.state), 0)} ${esc(this._unitStr("irradiance", ctx.irr, unitOf(ctx.irr)))}`.trim(), "mdi:solar-power-variant", "amber")}
-          ${this._tile("illuminance", this._label("illuminance", "Light"), ctx.lux, num(ctx.lux?.state) == null ? "—" : `${fmtNum(num(ctx.lux?.state), 0)} ${esc(this._unitStr("illuminance", ctx.lux, "lx"))}`, "mdi:brightness-5", "amber")}
-          ${ctx.sunrise ? this._tile("sunrise", "Sunrise", ctx.sun, ctx.sunrise, "mdi:weather-sunset-up", "amber") : ""}
-          ${ctx.sunset ? this._tile("sunset", "Sunset", ctx.sun, ctx.sunset, "mdi:weather-sunset-down", "orange") : ""}
-          ${ctx.moon ? this._tile("moon", ctx.moonMeta.label, ctx.moon, ctx.moonMeta.label, ctx.moonMeta.icon, "purple") : ""}
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "soil": {
-        if (!ctx.showSoil) return "";
-        return this._wrapSection(id, compact, `<div class="grid">${this._soilTiles()}</div>`);
-      }
-      case "lightning": {
-        if (!ctx.showLightning) return "";
-        const body = `<div class="grid">
-          ${this._tile("lightning_count", this._label("lightning_count", "Strikes"), ctx.lightningCount, num(ctx.lightningCount?.state) == null ? "—" : `${fmtNum(num(ctx.lightningCount?.state), 0)}`, "mdi:flash", (num(ctx.lightningCount?.state) ?? 0) > 0 ? "amber" : "grey")}
-          ${this._tile("lightning_distance", this._label("lightning_distance", "Distance"), ctx.lightningDistance, num(ctx.lightningDistance?.state) == null ? "—" : `${fmtNum(num(ctx.lightningDistance?.state), 0)} ${esc(this._unitStr("lightning_distance", ctx.lightningDistance, unitOf(ctx.lightningDistance) || "mi"))}`, "mdi:map-marker-distance", "orange")}
-          ${this._tile("lightning_time", this._label("lightning_time", "Last strike"), ctx.lightningTime, formatLastRain(ctx.lightningTime, this._hass), "mdi:clock-outline", "amber")}
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "air": {
-        if (!ctx.showAir) return "";
-        const body = `<div class="grid">
-          ${this._tile("pm25", this._label("pm25", ctx.pmm.label), ctx.pm25, ctx.pm == null ? "—" : `${fmtNum(ctx.pm, 0)} ${esc(this._unitStr("pm25", ctx.pm25, unitOf(ctx.pm25) || "µg/m³"))}`, "mdi:air-filter", ctx.pmm.color)}
-          ${this._tile("aqi", this._label("aqi", ctx.aqim.label), ctx.aqi, ctx.aqiVal == null ? "—" : `${fmtNum(ctx.aqiVal, 0)}`, "mdi:air-purifier", ctx.aqim.color)}
-          ${this._tile("voc", this._label("voc", "VOC"), ctx.voc, num(ctx.voc?.state) == null ? "—" : `${fmtNum(num(ctx.voc?.state), 0)} ${esc(this._unitStr("voc", ctx.voc, unitOf(ctx.voc) || "ppb"))}`, "mdi:chemical-weapon", this._color("voc", num(ctx.voc?.state), "green"))}
-          ${this._tile("noise", this._label("noise", "Noise"), ctx.noise, num(ctx.noise?.state) == null ? "—" : `${fmtNum(num(ctx.noise?.state), 0)} ${esc(this._unitStr("noise", ctx.noise, unitOf(ctx.noise) || "dB"))}`, "mdi:volume-high", this._color("noise", num(ctx.noise?.state), "green"))}
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "station": {
-        if (!ctx.showMore) return "";
-        const body = `<div class="grid">
-          ${this._tile("pressure", this._label("pressure", ctx.trend.label ? `Pressure · ${ctx.trend.label}` : "Pressure"), ctx.pressure, this._fmt("pressure", ctx.pressure, 2, unitOf(ctx.pressure) || "inHg"), ctx.trend.icon || "mdi:gauge", ctx.trend.color === "grey" ? "teal" : ctx.trend.color, this._histSpark("pressure"))}
-          ${this._tile("pressure_abs", this._label("pressure_abs", "Abs pressure"), ctx.pressureAbs, this._fmt("pressure_abs", ctx.pressureAbs, 2, unitOf(ctx.pressureAbs) || "inHg"), "mdi:gauge", "teal")}
-          ${this._tile("indoor_temperature", this._label("indoor_temperature", "Indoor"), ctx.indoorT, ctx.indoorT ? `${fmtNum(this._conv(ctx.indoorT, "°F").value, 1)}°` : "—", "mdi:home-thermometer", this._color("temperature", num(ctx.indoorT?.state), "green", this._conv(ctx.indoorT, "°F").src || "°F"))}
-          ${this._tile("indoor_humidity", this._label("indoor_humidity", "Indoor RH"), ctx.indoorH, num(ctx.indoorH?.state) == null ? "—" : `${Math.round(num(ctx.indoorH?.state))}%`, "mdi:water-percent", this._color("humidity", num(ctx.indoorH?.state), "cyan"))}
-          ${this._tile("co2", this._label("co2", "CO₂"), ctx.co2, num(ctx.co2?.state) == null ? "—" : `${fmtNum(num(ctx.co2?.state), 0)} ${esc(this._unitStr("co2", ctx.co2, "ppm"))}`, "mdi:molecule-co2", this._color("co2", num(ctx.co2?.state), "green"))}
-        </div>`;
-        return this._wrapSection(id, compact, body);
-      }
-      case "records": {
-        if (!this._wantRecords()) return "";
-        return this._wrapSection(id, compact, this._recordsHtml(ctx));
-      }
-      case "comfort": {
-        if (!this._wantComfort()) return "";
-        return this._wrapSection(id, compact, this._comfortHtml());
-      }
-      case "forecast": {
-        const showDaily = !!this._config?.show_forecast;
-        const showHourly = this._wantHourly() || this._config?.show_hourly_forecast === true;
-        if (!showDaily && !showHourly) return "";
-        return this._wrapSection(id, compact, this._forecastHtml());
-      }
-      case "battery": {
-        if (!ctx.showBattery || !ctx.batt || !ctx.battery) return "";
-        const body = `<div class="battery ${ctx.batt.low ? "warn" : "ok"}" data-key="battery" data-entity="${esc(ctx.battery.entity_id)}">
-          <ha-icon icon="${ctx.batt.icon}"></ha-icon>
-          ${esc(this._label("battery", ctx.batt.text))}
-        </div>`;
-        return this._wrapSection(id, true, body);
-      }
-      default:
-        return "";
+  _ensureShell() {
+    if (!this.shadowRoot) {
+      const root = this.attachShadow({ mode: "open" });
+      const style = document.createElement("style");
+      style.textContent = CARD_STYLES;
+      this._card = document.createElement("ha-card");
+      this._dialog = document.createElement("dialog");
+      this._dialog.className = "graph-dialog";
+      this._dialog.setAttribute("aria-labelledby", "graph-title");
+      this._dialog.addEventListener("close", () => this._onDialogClosed());
+      root.append(style, this._card, this._dialog);
+      this._bindEvents(root);
     }
+  }
+  /** Pseudo-entity carrying a derived value in the temperature sensor's unit. */
+  _derivedEntity(base, valueF, srcUnit) {
+    const value = fromFahrenheit(valueF, srcUnit || "°F");
+    return {
+      ...base,
+      state: value.toFixed(2),
+      attributes: { ...base.attributes, unit_of_measurement: srcUnit || "°F" }
+    };
   }
   _render(force = false) {
     if (!this._config) return;
-    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._ensureShell();
     this._ensureStaleTimer();
     if (!force && this._hass) {
       const sig = this._watchedSignature();
@@ -2589,133 +4736,135 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     } else if (this._hass) {
       this._renderSignature = this._watchedSignature();
     }
+    const hass = this._hass;
+    const language = this._config.language || hass?.locale?.language || hass?.language || "en";
+    this.locale = language;
+    this.t = makeTranslator(language);
+    setNumberLocale(numberLocaleFor(hass, language));
+    const { t } = this;
     const layout = this._config.layout || "full";
     const compact = layout === "compact";
     const name = this._config.name || "Weather Station";
-    const hass = this._hass;
-    const temp = this._st("temperature");
-    const feels = this._st("feels_like");
-    const humidity = this._st("humidity");
-    const dew = this._st("dew_point");
-    const high = this._st("temp_high");
-    const low = this._st("temp_low");
-    const wind = this._st("wind_speed");
-    const gust = this._st("wind_gust");
-    const maxGust = this._st("max_gust");
-    const wdir = this._st("wind_direction");
-    const rate = this._st("rain_rate");
-    const today = this._st("rain_today");
-    const event = this._st("rain_event");
-    const week = this._st("rain_week");
-    const month = this._st("rain_month");
-    const year = this._st("rain_year");
-    const lastRain = this._st("last_rain");
-    const uv = this._st("uv");
-    const irr = this._st("irradiance");
-    const lux = this._st("illuminance");
-    const pressure = this._st("pressure");
-    const pressureAbs = this._st("pressure_abs");
-    const indoorT = this._st("indoor_temperature");
-    const indoorH = this._st("indoor_humidity");
-    const co2 = this._st("co2");
-    const pm25 = this._st("pm25");
-    const aqi = this._st("aqi");
-    const voc = this._st("voc");
-    const noise = this._st("noise");
-    const leaf = this._st("leaf_wetness");
+    const temp = this.st("temperature");
+    const humidity = this.st("humidity");
+    const wind = this.st("wind_speed");
+    let feels = this.st("feels_like");
+    let dew = this.st("dew_point");
+    const high = this.st("temp_high");
+    const low = this.st("temp_low");
+    const gust = this.st("wind_gust");
+    const maxGust = this.st("max_gust");
+    const wdir = this.st("wind_direction");
+    const rate = this.st("rain_rate");
+    const today = this.st("rain_today");
+    const event = this.st("rain_event");
+    const week = this.st("rain_week");
+    const month = this.st("rain_month");
+    const year = this.st("rain_year");
+    const lastRain = this.st("last_rain");
+    const uv = this.st("uv");
+    const irr = this.st("irradiance");
+    const lux = this.st("illuminance");
+    const pressure = this.st("pressure");
+    const pressureAbs = this.st("pressure_abs");
+    const indoorT = this.st("indoor_temperature");
+    const indoorH = this.st("indoor_humidity");
+    const co2 = this.st("co2");
+    const pm25 = this.st("pm25");
+    const aqi = this.st("aqi");
+    const voc = this.st("voc");
+    const noise = this.st("noise");
+    const leaf = this.st("leaf_wetness");
+    const signal = this.st("signal_strength");
     const soilStates = [];
     for (let i = 1; i <= 8; i++) {
-      const m = this._st(`soil_moisture_${i}`);
-      const t2 = this._st(`soil_temperature_${i}`);
+      const m = this.st(`soil_moisture_${i}`);
+      const s = this.st(`soil_temperature_${i}`);
       if (m) soilStates.push(m);
-      if (t2) soilStates.push(t2);
+      if (s) soilStates.push(s);
     }
     if (leaf) soilStates.push(leaf);
-    const lightningCount = this._st("lightning_count");
-    const lightningDistance = this._st("lightning_distance");
-    const lightningTime = this._st("lightning_time");
-    const battery = this._st("battery");
-    const sun = entityState(this._hass, this._config.sun_entity || "sun.sun");
-    const moon = entityState(this._hass, this._config.moon_entity);
-    const t = this._conv(temp, "°F");
-    const f = this._conv(feels, "°F");
-    const hi = this._conv(high, "°F");
-    const lo = this._conv(low, "°F");
+    const lightningCount = this.st("lightning_count");
+    const lightningDistance = this.st("lightning_distance");
+    const lightningTime = this.st("lightning_time");
+    const battery = this.st("battery");
+    const sun = entityState(hass, this._config.sun_entity || "sun.sun");
+    const moon = entityState(hass, this._config.moon_entity);
+    let feelsDerived = false;
+    let dewDerived = false;
+    if (this._config.derive_missing !== false && temp && available(temp)) {
+      const tSrc = this.conv(temp, "°F").src || "°F";
+      const tF = toFahrenheit(num(temp.state), tSrc);
+      const rh = num(humidity?.state);
+      const mph = wind && num(wind.state) != null ? toMph(num(wind.state), unitOf(wind) || "mph") : null;
+      if (!available(feels)) {
+        const fl = feelsLikeF(tF, rh, mph);
+        if (fl != null) {
+          feels = this._derivedEntity(temp, fl, tSrc);
+          feelsDerived = true;
+        }
+      }
+      if (!available(dew)) {
+        const dp = dewPointF(tF, rh);
+        if (dp != null) {
+          dew = this._derivedEntity(temp, dp, tSrc);
+          dewDerived = true;
+        }
+      }
+    }
+    const tc = this.conv(temp, "°F");
+    const f = this.conv(feels, "°F");
+    const hi = this.conv(high, "°F");
+    const lo = this.conv(low, "°F");
     const h = num(humidity?.state);
-    const d = this._conv(dew, "°F");
-    const ws = this._conv(wind, "mph");
-    const wg = this._conv(gust, "mph");
+    const d = this.conv(dew, "°F");
+    const ws = this.conv(wind, "mph");
+    const wg = this.conv(gust, "mph");
     const windDir = parseWindDirection(wdir);
-    const deg = windDir.deg;
-    const card = windDir.card;
-    const rr = this._conv(rate, unitOf(rate) || "in/h");
+    const rr = this.conv(rate, unitOf(rate) || "in/h");
     const uvn = num(uv?.state);
     const raining = rr.value != null && rr.value > 0;
-    const tColor = this._color("temperature", t.raw, "grey", t.src || "°F");
-    const uvColor = this._color("uv", uvn, "grey");
-    const uvm = uvMeta(uvn, uvColor);
+    const tColor = this.color("temperature", tc.raw, "grey", tc.src || "°F");
+    const uvm = uvMeta(uvn, this.color("uv", uvn, "grey"));
     const pm = num(pm25?.state);
-    const pmm = pm25Meta(pm, this._color("pm25", pm, "grey"));
+    const pmm = pm25Meta(pm, this.color("pm25", pm, "grey"));
     const aqiVal = num(aqi?.state);
-    const aqim = aqiMeta(aqiVal, this._color("aqi", aqiVal, "grey"));
-    const pressureConv = this._conv(pressure, unitOf(pressure) || "inHg");
+    const aqim = aqiMeta(aqiVal, this.color("aqi", aqiVal, "grey"));
+    const pressureConv = this.conv(pressure, unitOf(pressure) || "inHg");
     const trend = this._trackPressure(pressureConv.value);
-    const bf = this._config.show_beaufort ? beaufort(ws.value) : null;
-    const locale = hass?.locale?.language;
+    const bf = this._config.show_beaufort ? beaufort(convertValue(ws.raw, ws.src || "mph", "imperial").value) : null;
     const sunrise = formatSunTime(
       sun?.attributes?.next_rising || sun?.attributes?.rising,
-      locale
+      language
     );
     const sunset = formatSunTime(
       sun?.attributes?.next_setting || sun?.attributes?.setting,
-      locale
+      language
     );
-    const moonMetaInfo = moonMeta(moon?.state);
     const ageMs = entityAgeMs(temp) ?? entityAgeMs(pressure) ?? entityAgeMs(wind);
     const staleLimit = Number(this._config.stale_minutes);
     const staleMinutes = Number.isFinite(staleLimit) ? staleLimit : 30;
     const isStale = ageMs != null && staleMinutes > 0 && ageMs > staleMinutes * 6e4;
-    const updatedLabel = ageMs == null ? null : relativeTime(new Date(Date.now() - ageMs), hass?.locale?.language);
+    const updatedLabel = ageMs == null ? null : relativeTime(new Date(Date.now() - ageMs), language);
     const heroIcon = raining ? (rr.raw ?? 0) >= 0.3 ? "mdi:weather-pouring" : "mdi:weather-rainy" : uvn != null && uvn >= 6 ? "mdi:weather-sunny" : uvn != null && uvn >= 1 ? "mdi:weather-partly-cloudy" : "mdi:weather-night";
-    const showConditions = this._sectionVisible("hide_conditions", [temp, feels, humidity, dew, high, low]);
-    const showWind = this._sectionVisible("hide_wind", [wind, gust, maxGust, wdir]);
-    const showRain = this._sectionVisible("hide_rain", [rate, today, event, week, month, year, lastRain]);
-    const showSun = this._sectionVisible("hide_sun", [uv, irr, lux, sun, moon]);
-    const showMore = this._sectionVisible("hide_more", [pressure, pressureAbs, indoorT, indoorH, co2]);
-    const showSoil = this._sectionVisible("hide_soil", soilStates);
-    const showLightning = this._sectionVisible("hide_lightning", [lightningCount, lightningDistance, lightningTime]);
-    const showAir = this._sectionVisible("hide_air", [pm25, aqi, voc, noise]);
-    const showBattery = !this._config.hide_battery && !!battery;
-    const showBody = layout !== "chips";
-    const showExtra = layout === "full" || compact;
-    const batt = batteryInfo(battery, this._config.battery_warning_threshold);
-    const missing = !temp && !this._config.entities?.temperature;
-    const tempUnit = this._unitStr("temperature", temp, t.unit || "°");
-    const showUpdated = this._config.show_updated !== false;
-    const subtitleBits = [];
-    if (raining) {
-      subtitleBits.push(`Raining · ${fmtNum(rr.value, 2)} ${esc(this._unitStr("rain_rate", rate, rr.unit || "in/h"))}`);
-    } else {
-      subtitleBits.push("Live station");
-    }
-    if (hi.value != null || lo.value != null) {
-      subtitleBits.push(`H ${hi.value == null ? "—" : Math.round(hi.value)}° / L ${lo.value == null ? "—" : Math.round(lo.value)}°`);
-    }
     const ctx = {
       compact,
-      showConditions,
-      showWind,
-      showRain,
-      showSun,
-      showSoil,
-      showLightning,
-      showAir,
-      showMore,
-      showBattery,
+      showConditions: this._sectionVisible("hide_conditions", [temp, feels, humidity, dew, high, low]),
+      showWind: this._sectionVisible("hide_wind", [wind, gust, maxGust, wdir]),
+      showRain: this._sectionVisible("hide_rain", [rate, today, event, week, month, year, lastRain]),
+      showSun: this._sectionVisible("hide_sun", [uv, irr, lux, sun, moon]),
+      showMore: this._sectionVisible("hide_more", [pressure, pressureAbs, indoorT, indoorH, co2]),
+      showSoil: this._sectionVisible("hide_soil", soilStates),
+      showLightning: this._sectionVisible("hide_lightning", [lightningCount, lightningDistance, lightningTime]),
+      showAir: this._sectionVisible("hide_air", [pm25, aqi, voc, noise]),
+      showHealth: !this._config.hide_health,
+      showBattery: !this._config.hide_battery && !!battery,
       temp,
       feels,
+      feelsDerived,
       humidity,
       dew,
+      dewDerived,
       high,
       low,
       wind,
@@ -2744,14 +4893,15 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       lightningCount,
       lightningDistance,
       lightningTime,
+      signal,
       battery,
-      batt,
+      batt: batteryInfo(battery, this._config.battery_warning_threshold),
       sun,
       moon,
       sunrise: sunrise !== "—" ? sunrise : "",
       sunset: sunset !== "—" ? sunset : "",
-      moonMeta: moonMetaInfo,
-      t,
+      moonMeta: moonMeta(moon?.state),
+      t: tc,
       f,
       hi,
       lo,
@@ -2759,8 +4909,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       d,
       ws,
       wg,
-      deg,
-      card,
+      deg: windDir.deg,
+      card: windDir.card,
       rr,
       uvn,
       raining,
@@ -2772,54 +4922,67 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       aqim,
       trend,
       bf,
-      tempUnit
+      tempUnit: this.unitStr("temperature", temp, tc.unit || "°")
     };
+    const showBody = layout !== "chips";
+    const showExtra = layout === "full" || compact;
+    const missing = !temp && !this._config.entities?.temperature;
+    const showUpdated = this._config.show_updated !== false;
+    const subtitleBits = [];
+    subtitleBits.push(raining ? t("header.raining", { rate: `${fmtNum(rr.value, 2)} ${this.unitStr("rain_rate", rate, rr.unit || "in/h")}` }) : t("header.live"));
+    if (hi.value != null || lo.value != null) {
+      subtitleBits.push(t("header.hilo", {
+        hi: hi.value == null ? "—" : Math.round(hi.value),
+        lo: lo.value == null ? "—" : Math.round(lo.value)
+      }));
+    }
     const order = normalizeSectionOrder(this._config.section_order);
-    const sectionsHtml = showExtra ? order.map((sid) => this._renderSection(sid, ctx)).join("") : "";
-    const weatherSt = entityState(this._hass, this._config.weather_entity);
+    const sectionsHtml = showExtra ? order.map((sid) => SECTION_RENDERERS[sid](this, ctx)).join("") : "";
+    const weatherSt = entityState(hass, this._config.weather_entity);
     const skinOn = this._config.seasonal_skins !== false;
     const season = currentSeason(/* @__PURE__ */ new Date(), this._config.hemisphere === "south" ? "south" : "north");
     const skinClass = skinOn ? seasonalSkinClasses(season, weatherSt?.state || (raining ? "rainy" : null)) : "";
     const layoutClass = compact ? "compact" : layout === "chips" ? "chips-layout" : layout;
-    const html = `
-      <style>${CARD_STYLES}</style>
-      <ha-card class="${layoutClass}${isStale ? " stale" : ""}${skinClass ? ` ${skinClass}` : ""}">
-        ${layout === "chips" ? this._chips(temp, feels, humidity, today, wind, pressure, uv, gust, raining) : ""}
-        ${showBody ? `
-          ${this._alertsHtml()}
-          <div class="header">
-            <div class="header-main">
-              <div class="title">${esc(name)}</div>
-              <div class="subtitle">${subtitleBits.join(" · ")}</div>
-            </div>
-            ${showUpdated && updatedLabel ? `
-              <div class="status-chip ${isStale ? "warn" : ""}" title="${isStale ? "Data may be stale" : "Last sensor update"}">
-                <span class="status-dot"></span>
-                ${isStale ? `Stale · ${esc(updatedLabel)}` : esc(updatedLabel)}
-              </div>
-            ` : ""}
+    const heroSecondary = [
+      f.value != null ? t("header.feels", { v: Math.round(f.value) }) : "",
+      h != null ? t("header.rh", { v: Math.round(h) }) : ""
+    ].filter(Boolean).join(" · ");
+    const heroValue = tc.value == null ? "—" : `${Math.round(tc.value)}°`;
+    const setupHint = esc(t("hint.setup")).replace("{prefix}", "<code>prefix</code>").replace("{example}", "<code>ws</code>");
+    const inner = `
+      ${layout === "chips" ? renderChips(this, ctx, this._chipsExpanded) : ""}
+      ${showBody ? `
+        ${renderAlerts(this)}
+        <div class="header">
+          <div class="header-main">
+            <h2 class="title">${esc(name)}</h2>
+            <div class="subtitle">${esc(subtitleBits.join(" · "))}</div>
           </div>
-          <button class="hero" data-key="temperature" data-entity="${esc(temp?.entity_id || "")}">
-            <ha-icon icon="${heroIcon}" class="hero-icon" style="color:${iconColorVar(tColor)}"></ha-icon>
-            <div class="hero-text">
-              <div class="hero-primary">${t.value == null ? "—" : Math.round(t.value)}°</div>
-              <div class="hero-secondary">
-                ${f.value != null ? `Feels ${Math.round(f.value)}°` : ""}
-                ${h != null ? ` · ${Math.round(h)}% RH` : ""}
-              </div>
+          ${showUpdated && updatedLabel ? `
+            <div class="status-chip ${isStale ? "warn" : ""}" role="status" title="${esc(isStale ? t("status.stale_title") : t("status.updated_title"))}">
+              <span class="status-dot" aria-hidden="true"></span>
+              ${esc(isStale ? t("status.stale", { when: updatedLabel }) : updatedLabel)}
             </div>
-            <div class="hero-spark">${this._histSpark("temperature")}</div>
-          </button>
-        ` : ""}
-        ${sectionsHtml}
-        ${missing && hass ? `<div class="hint">Set <code>prefix</code> (e.g. <code>ws</code>) or pick entities in the card editor.</div>` : ""}
-      </ha-card>
+          ` : ""}
+        </div>
+        <button class="hero" data-key="temperature" data-entity="${esc(temp?.entity_id || "")}" aria-label="${esc(`${this.label("temperature", t("tile.temperature"))}: ${heroValue}${heroSecondary ? `, ${heroSecondary}` : ""}`)}">
+          <ha-icon icon="${heroIcon}" class="hero-icon" style="color:${iconColorVar(tColor)}" aria-hidden="true"></ha-icon>
+          <div class="hero-text" aria-hidden="true">
+            <div class="hero-primary">${heroValue}</div>
+            <div class="hero-secondary">${esc(heroSecondary)}</div>
+          </div>
+          <div class="hero-spark" aria-hidden="true">${this.histSpark("temperature")}</div>
+        </button>
+      ` : ""}
+      ${sectionsHtml}
+      ${missing && hass ? `<div class="hint">${setupHint}</div>` : ""}
     `;
-    this.shadowRoot.innerHTML = html;
-    this.shadowRoot.querySelectorAll("[data-entity], [data-key='__chips_expand']").forEach((el) => {
-      const htmlEl = el;
-      this._bindTile(htmlEl, htmlEl.dataset.key || "", htmlEl.dataset.entity || "");
-    });
+    const card = this._card;
+    const cls = `${layoutClass}${isStale ? " stale" : ""}${skinClass ? ` ${skinClass}` : ""}`;
+    if (card.className !== cls) card.className = cls;
+    card.setAttribute("lang", language);
+    morph(card, inner);
+    if (this._graph) this._renderGraph();
   }
 };
 _MushroomWeatherStationCard.VERSION = CARD_VERSION;

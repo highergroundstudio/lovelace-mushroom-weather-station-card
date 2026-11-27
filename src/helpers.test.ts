@@ -349,3 +349,22 @@ describe("thresholds and escaping", () => {
     expect(esc(undefined)).toBe("");
   });
 });
+
+describe("0.9 unit fixes", () => {
+  it("converts lightning distance between mi and km", () => {
+    expect(convertValue(10, "mi", "metric").unit).toBe("km");
+    expect(convertValue(10, "mi", "metric").value).toBeCloseTo(16.09, 1);
+    expect(convertValue(16.0934, "km", "imperial").value).toBeCloseTo(10, 2);
+    expect(convertValue(10, "mi", "native")).toEqual({ value: 10, unit: "mi" });
+  });
+
+  it("exposes i18n keys on meta helpers", () => {
+    expect(uvMeta(9).key).toBe("uv.very_high");
+    expect(pm25Meta(40).key).toBe("air.sensitive");
+    expect(aqiMeta(10).key).toBe("air.good");
+    expect(pressureTrendMeta(30.1, 30).key).toBe("trend.rising");
+    expect(moonMeta("full").key).toBe("moon.full_moon");
+    expect(moonMeta("something odd").key).toBe("moon.label");
+    expect(batteryInfo({ entity_id: "s", state: "12", attributes: {} }, 20)?.key).toBe("battery.low_pct");
+  });
+});

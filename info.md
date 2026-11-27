@@ -2,7 +2,7 @@
 
 Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offset, and similar).
 
-![Mushroom Weather Station Card](https://raw.githubusercontent.com/highergroundstudio/lovelace-mushroom-weather-station-card/main/images/card-preview.svg)
+![Mushroom Weather Station Card](https://raw.githubusercontent.com/highergroundstudio/lovelace-mushroom-weather-station-card/main/images/layout-full.png)
 
 ## Highlights
 
@@ -12,18 +12,25 @@ Lovelace card for personal weather station sensors (Ecowitt, Ambient, Fine Offse
 - Custom section order (drag-and-drop in the editor)
 - Hourly + daily forecast with precip %
 - History sparklines, wind rose, precip timeline
-- Record book (month/year extremes) and comfort zones
+- Record book (month/year extremes from long-term statistics) and comfort zones
 - Seasonal skins by season + condition
 - Weather alerts banner
 - Soil moisture/temp 1–8, leaf wetness, AQI, VOC, noise
 - Sunrise / sunset / moon phase
 - Rain month vs normal + days since rain
 - Stale-data warning and pressure trend
+- Graph popup with 24h / 7d / 30d history
+- Station health: offline sensors, transmitter batteries, signal
+- Calculated feels-like and dew point when missing
+- English, Deutsch, Français, Español, Nederlands
+- Keyboard and screen-reader friendly
 - Mushroom is not required
+
+[Live demo](https://highergroundstudio.github.io/lovelace-mushroom-weather-station-card/)
 
 ## Confirm version
 
-Card editor banner should show **v0.8.0** after HACS update + hard refresh.
+Card editor banner should show **v0.9.0** after HACS update + hard refresh.
 
 ## Example
 
