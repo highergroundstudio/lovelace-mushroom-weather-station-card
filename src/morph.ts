@@ -69,6 +69,26 @@ function morphNode(from: Node, to: Node): void {
   morphChildren(from, to);
 }
 
+type MoveCapable = Node & { moveBefore?: (node: Node, child: Node | null) => void };
+
+/**
+ * Move a node without resetting its state where the browser supports
+ * `moveBefore` (Chrome 133+). `insertBefore` detaches the node first, which
+ * blurs it; `morph()` restores focus afterwards for that fallback.
+ */
+function moveBefore(parent: Node, node: Node, ref: Node | null): void {
+  const p = parent as MoveCapable;
+  if (typeof p.moveBefore === "function") {
+    try {
+      p.moveBefore(node, ref);
+      return;
+    } catch {
+      /* e.g. moving across documents — fall back */
+    }
+  }
+  parent.insertBefore(node, ref);
+}
+
 /** Patch `parent`'s children to match `next`'s children (both are containers). */
 export function morphChildren(parent: Node, next: Node): void {
   const oldKeyed = new Map<string, Node>();
@@ -95,7 +115,7 @@ export function morphChildren(parent: Node, next: Node): void {
     }
 
     if (match) {
-      if (match !== cursor) parent.insertBefore(match, cursor);
+      if (match !== cursor) moveBefore(parent, match, cursor);
       else cursor = cursor.nextSibling;
       morphNode(match, incoming);
     } else {
@@ -120,5 +140,11 @@ export function morphChildren(parent: Node, next: Node): void {
 export function morph(target: Element | ShadowRoot | DocumentFragment, html: string): void {
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
+  const root = target.getRootNode() as Document | ShadowRoot;
+  const focused = (root as { activeElement?: Element | null }).activeElement as HTMLElement | null;
   morphChildren(target, tpl.content);
+  // If a reorder detached the focused element, give focus back.
+  if (focused && focused.isConnected && target.contains(focused) && root.activeElement !== focused) {
+    focused.focus({ preventScroll: true });
+  }
 }

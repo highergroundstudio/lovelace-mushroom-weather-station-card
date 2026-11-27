@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { graphStats, graphSvg, nearestPoint } from "./graph";
 import {
   ingestHistoryRaw,
   parseStatistics,
@@ -66,6 +67,49 @@ describe("long-term statistics", () => {
     expect(s.source).toBe("statistics");
     expect(s.points).toEqual([{ t: 0, v: 2, min: 1, max: 3 }, { t: H, v: 5 }]);
     const h = seriesFromHistory(ingestHistoryRaw({ "sensor.x": [{ s: "1", lu: 1 }, { s: "unavailable", lu: 2 }, { s: "3", lu: 3 }] }, { "sensor.x": "x" }).x);
-    expect(h.points.map((p) => p.v)).toEqual([1, 3]);
+    // The outage stays in the series as a break marker.
+    expect(h.points).toEqual([{ t: 1000, v: 1 }, { t: 2000, v: 0, gap: true }, { t: 3000, v: 3 }]);
+  });
+
+  it("never dates a record after now, and prefers exact raw timestamps on ties", () => {
+    const now = Date.now();
+    const dayStart = now - 3600_000; // a daily bucket still running
+    const book = recordBookFromStatistics({
+      temperature: [{ start: dayStart, end: dayStart + 86400_000, min: 40, max: 80, mean: 60, state: null }],
+    });
+    expect(book.hottest!.at).toBeLessThanOrEqual(Date.now());
+    expect(book.hottest!.at).toBeGreaterThanOrEqual(dayStart);
+    const tie = recordBookFromStatistics(
+      { temperature: [{ start: dayStart, end: dayStart + 86400_000, min: 40, max: 80, mean: 60, state: null }] },
+      { hottest: { value: 80, at: now - 600_000 } },
+    );
+    expect(tie.hottest).toEqual({ value: 80, at: now - 600_000 });
+  });
+});
+
+describe("graph series", () => {
+  const win = { start: 0, end: 24 * H };
+
+  it("weights recorded-state averages by duration", () => {
+    // 10 for 23 hours, then 30 for the last hour.
+    const s = { source: "history" as const, points: [{ t: 0, v: 10 }, { t: 23 * H, v: 30 }] };
+    expect(graphStats(s, win.end)!.avg).toBeCloseTo(10.833, 2);
+    // Equal-length statistics buckets keep a plain mean.
+    expect(graphStats({ source: "statistics", points: s.points })!.avg).toBe(20);
+  });
+
+  it("excludes outages from stats and breaks the line there", () => {
+    const s = {
+      source: "history" as const,
+      points: [{ t: 0, v: 10 }, { t: 2 * H, v: 0, gap: true }, { t: 4 * H, v: 20 }],
+    };
+    const st = graphStats(s, 6 * H)!;
+    expect(st.min).toBe(10);
+    // 10 for 2h, outage 2h (ignored), 20 for 2h.
+    expect(st.avg).toBeCloseTo(15, 5);
+    const d = /class="graph-line" d="([^"]+)"/.exec(graphSvg(s, { start: 0, end: 6 * H }))![1];
+    expect(d.match(/M/g)!.length).toBe(2);
+    // Cursor skips the outage marker.
+    expect(nearestPoint(s, { start: 0, end: 4 * H }, 0.5)).not.toBe(1);
   });
 });

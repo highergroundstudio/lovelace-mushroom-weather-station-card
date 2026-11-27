@@ -108,6 +108,7 @@ const en = {
   "forecast.pick_entity": "Pick a weather entity for forecast.",
   "forecast.missing": "Weather entity {id} is missing.",
   "forecast.waiting": "Waiting for daily forecast from {id}…",
+  "forecast.waiting_hourly": "Waiting for hourly forecast from {id}…",
   "forecast.hourly_region": "Hourly forecast",
   "forecast.daily_region": "Daily forecast",
   "forecast.item_aria": "{when}: {temp}, {pop} chance of precipitation",
@@ -162,6 +163,9 @@ const en = {
   "alerts.region": "Weather alerts",
 
   // Station health
+  "health.all_online": "All {total} sensors online",
+  "health.online": "{ok} of {total} sensors online",
+  "health.battery_unknown": "unknown",
   "health.all_ok": "All {total} sensors reporting",
   "health.reporting": "{ok} of {total} sensors reporting",
   "health.offline": "Offline",

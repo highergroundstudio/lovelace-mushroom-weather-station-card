@@ -95,6 +95,7 @@ const nl: Translations = {
   "forecast.pick_entity": "Kies een weerentiteit voor de verwachting.",
   "forecast.missing": "Weerentiteit {id} ontbreekt.",
   "forecast.waiting": "Wachten op dagverwachting van {id}…",
+  "forecast.waiting_hourly": "Wachten op uurverwachting van {id}…",
   "forecast.hourly_region": "Uurverwachting",
   "forecast.daily_region": "Dagverwachting",
   "forecast.item_aria": "{when}: {temp}, {pop} kans op neerslag",
@@ -143,6 +144,9 @@ const nl: Translations = {
   "alerts.default": "Weerwaarschuwing",
   "alerts.region": "Weerwaarschuwingen",
 
+  "health.all_online": "Alle {total} sensoren online",
+  "health.online": "{ok} van {total} sensoren online",
+  "health.battery_unknown": "onbekend",
   "health.all_ok": "Alle {total} sensoren melden",
   "health.reporting": "{ok} van {total} sensoren melden",
   "health.offline": "Offline",

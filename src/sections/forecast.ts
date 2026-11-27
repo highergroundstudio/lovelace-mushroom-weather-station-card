@@ -32,7 +32,12 @@ function hourly(v: View): string {
   if (!id) return "";
   const wanted = Math.min(24, Math.max(6, Number(v.config.hourly_forecast_hours) || 24));
   const hours = (v.forecastHours || []).slice(0, wanted);
-  if (!hours.length) return "";
+  if (!hours.length) {
+    // Entity present but nothing yet (or hourly unsupported): say so instead of vanishing.
+    return entityState(v.hass, id)
+      ? `<div class="hint">${esc(v.t("forecast.waiting_hourly", { id }))}</div>`
+      : "";
+  }
   const tempUnit = entityState(v.hass, id)?.attributes?.temperature_unit || "";
   return `<div class="forecast hourly" role="group" aria-label="${esc(v.t("forecast.hourly_region"))}">
     ${hours

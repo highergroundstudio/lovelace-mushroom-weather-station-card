@@ -54,6 +54,7 @@ import {
   unitOf,
   uvMeta,
 } from "./helpers";
+import { batteryEntityIds, batteryList } from "./health";
 import { hasKey, makeTranslator, type Translate } from "./i18n";
 import { morph } from "./morph";
 import { SECTION_RENDERERS, renderAlerts, renderChips } from "./sections";
@@ -143,8 +144,11 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
   private _graphCache = new Map<string, { at: number; series: GraphSeries; window: { start: number; end: number } }>();
   private _graphToken = 0;
   private _holdTimer: number | null = null;
-  private _held = false;
+  /** Element whose hold action fired; only its follow-up click is swallowed. */
+  private _heldEl: HTMLElement | null = null;
   private _holdEl: HTMLElement | null = null;
+  /** Locale for decimal separators; restored before any deferred formatting. */
+  private _numberLocale = "en";
 
   // View state (read by section renderers).
   forecastDays: ForecastItem[] = [];
@@ -244,12 +248,19 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
     this._graphCache.clear();
+    this._graphToken++;
     this._configStamp++;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
     void this._ensureRecords();
     this._render(true);
+    // An open graph was loaded with the old units/entities: reload it.
+    if (this._graph) {
+      this._graph = { ...this._graph, loading: true, cursor: -1 };
+      this._renderGraph();
+      void this._loadGraph();
+    }
   }
 
   set hass(hass: HomeAssistant) {
@@ -495,16 +506,19 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
       if (!el?.dataset.entity) return;
       const { hold } = this._actionsFor(el.dataset.key || "", el);
       if (!hold) return;
-      this._held = false;
+      this._heldEl = null;
       this._clearHold();
       this._holdEl = el;
       this._holdTimer = window.setTimeout(() => {
-        this._held = true;
+        this._heldEl = el;
         this._handleAction(hold, el.dataset.entity || "", el.dataset.key, el);
       }, 500);
     });
     root.addEventListener("pointerup", () => this._clearHold());
-    root.addEventListener("pointercancel", () => this._clearHold());
+    root.addEventListener("pointercancel", () => {
+      this._clearHold();
+      this._heldEl = null;
+    });
     // pointerleave does not bubble; capture it, but only for the held element itself.
     root.addEventListener("pointerleave", (ev) => {
       if (ev.target === this._holdEl) this._clearHold();
@@ -534,10 +548,10 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
       return;
     }
     ev.preventDefault();
-    if (this._held) {
-      this._held = false;
-      return;
-    }
+    const held = this._heldEl;
+    this._heldEl = null;
+    // Swallow only the click that ends the hold gesture on the same element.
+    if (held && held === el) return;
     const key = el.dataset.key || "";
     if (key === "__chips_expand") {
       this._chipsExpanded = !this._chipsExpanded;
@@ -553,6 +567,10 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
     const target = ev.target as HTMLElement | null;
     if (target?.classList.contains("graph-chart")) {
       this._onGraphKey(ev);
+      return;
+    }
+    if (target?.classList.contains("graph-range")) {
+      this._onRangeKey(ev, target);
       return;
     }
     // Native buttons already activate on Enter/Space; ARIA buttons need help.
@@ -612,7 +630,26 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
     }
   }
 
+  /** WAI-ARIA radio group: arrows move both selection and focus. */
+  private _onRangeKey(ev: KeyboardEvent, target: HTMLElement): void {
+    const ranges: GraphRange[] = ["24h", "7d", "30d"];
+    const i = ranges.indexOf(target.dataset.range as GraphRange);
+    let next = -1;
+    if (ev.key === "ArrowRight" || ev.key === "ArrowDown") next = (i + 1) % ranges.length;
+    else if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") next = (i - 1 + ranges.length) % ranges.length;
+    else if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = ranges.length - 1;
+    if (next < 0 || i < 0) return;
+    ev.preventDefault();
+    const btn = this._dialog?.querySelector(`.graph-range[data-range="${ranges[next]}"]`) as HTMLElement | null;
+    if (!btn) return;
+    this._onDialogAction("graph-range", btn);
+    btn.focus();
+  }
+
   private _onDialogClosed(): void {
+    // A queued close event can arrive after the graph was reopened.
+    if (this._dialog?.open) return;
     const opener = this._graph?.opener;
     this._graph = null;
     this._graphToken++;
@@ -637,30 +674,40 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
       const src = this._config?.units_source?.[g.entityId] || unitOf(st);
       const target = this._config?.unit_system || "native";
       const cv = (n: number) => convertValue(n, src, target).value ?? n;
-      try {
-        if (g.range !== "24h") {
+      let failed = false;
+      if (g.range !== "24h") {
+        try {
           const stats = await fetchStatistics(this._hass, [g.entityId], new Date(window.start), new Date(window.end), "hour");
           const rows = stats?.[g.entityId] || [];
           if (rows.length) series = seriesFromStatistics(rows);
+        } catch {
+          // Statistics unavailable — fall through to recorded states.
         }
-        if (!series || !series.points.length) {
+      }
+      if (!series || !series.points.length) {
+        try {
           const raw = await fetchHistoryRaw(this._hass, [g.entityId], new Date(window.start), new Date(window.end), false);
           const parsed = ingestHistoryRaw(raw, { [g.entityId]: "v" }).v || [];
           series = seriesFromHistory(parsed);
+        } catch {
+          failed = true;
+          series = { source: "history", points: [] };
         }
-      } catch {
-        series = { source: "history", points: [] };
       }
       series = {
         source: series.source,
         points: series.points.map((p) => ({
           t: p.t,
-          v: cv(p.v),
+          v: p.gap ? p.v : cv(p.v),
+          ...(p.gap ? { gap: true } : {}),
           ...(p.min != null ? { min: cv(p.min) } : {}),
           ...(p.max != null ? { max: cv(p.max) } : {}),
         })),
       };
-      this._graphCache.set(cacheKey, { at: Date.now(), series, window });
+      // Only cache results this load still owns, and never cache a failed request.
+      if (token === this._graphToken && !failed) {
+        this._graphCache.set(cacheKey, { at: Date.now(), series, window });
+      }
     }
     if (token !== this._graphToken || !this._graph) return;
     this._graph = { ...this._graph, loading: false, series, window };
@@ -681,11 +728,13 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
   private _renderGraph(): void {
     const g = this._graph;
     if (!g || !this._dialog) return;
+    // Another card may have rendered since; format with this card's locale.
+    setNumberLocale(this._numberLocale);
     const { t } = this;
     const unit = g.unit ? ` ${g.unit}` : "";
     const val = (n: number) => `${fmtNum(n, Math.abs(n) >= 100 ? 0 : Math.abs(n) >= 10 ? 1 : 2)}${unit}`;
     const ranges: GraphRange[] = ["24h", "7d", "30d"];
-    const stats = g.series ? graphStats(g.series) : null;
+    const stats = g.series ? graphStats(g.series, g.window.end) : null;
     let body: string;
     if (g.loading) {
       body = `<div class="graph-empty" role="status">${esc(t("graph.loading"))}</div>`;
@@ -731,6 +780,7 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
   private _paintGraphCursor(): void {
     const g = this._graph;
     if (!g?.series || !this._dialog) return;
+    setNumberLocale(this._numberLocale);
     const line = this._dialog.querySelector(".graph-cursor");
     const readout = this._dialog.querySelector(".graph-readout");
     const p = g.series.points[g.cursor];
@@ -770,10 +820,15 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
     const last = g.series.points.length - 1;
     const step = Math.max(1, Math.round(g.series.points.length / 48));
     let next = g.cursor < 0 ? last : g.cursor;
-    if (ev.key === "ArrowLeft") next = Math.max(0, next - step);
-    else if (ev.key === "ArrowRight") next = Math.min(last, next + step);
-    else if (ev.key === "Home") next = 0;
-    else if (ev.key === "End") next = last;
+    const pts = g.series.points;
+    const real = (i: number, dir: 1 | -1) => {
+      while (i >= 0 && i <= last && pts[i].gap) i += dir;
+      return i < 0 || i > last ? (g.cursor < 0 ? last : g.cursor) : i;
+    };
+    if (ev.key === "ArrowLeft") next = real(Math.max(0, next - step), -1);
+    else if (ev.key === "ArrowRight") next = real(Math.min(last, next + step), 1);
+    else if (ev.key === "Home") next = real(0, 1);
+    else if (ev.key === "End") next = real(last, -1);
     else return;
     ev.preventDefault();
     g.cursor = next;
@@ -796,7 +851,9 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
   }
 
   private _ensureStaleTimer(): void {
-    if (this._config?.show_updated === false) {
+    // Station health classifies quiet sensors by time, so it needs ticks too.
+    const healthNeedsTicks = !this._config?.hide_health && Number(this._config?.stale_minutes ?? 30) > 0;
+    if (this._config?.show_updated === false && !healthNeedsTicks) {
       if (this._staleTimer) {
         window.clearInterval(this._staleTimer);
         this._staleTimer = null;
@@ -1096,19 +1153,21 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
 
       const recent: Record<string, HistoryPoint[]> = {};
       // Sensors without statistics: raw history for the whole window (purge-limited).
-      if (missing.length) {
-        const raw = await fetchHistoryRaw(this._hass, missing, start, end, true);
-        if (token !== this._recordsToken) return;
-        Object.assign(recent, ingestHistoryRaw(raw, keyById));
-      }
+      // Each raw-history call may fail on its own; keep whatever did load.
+      const loadRaw = async (list: string[], from: Date, sigOnly: boolean) => {
+        try {
+          const raw = await fetchHistoryRaw(this._hass, list, from, end, sigOnly);
+          if (token === this._recordsToken) Object.assign(recent, ingestHistoryRaw(raw, keyById));
+        } catch {
+          /* leave these sensors to statistics / live state */
+        }
+      };
+      if (missing.length) await loadRaw(missing, start, true);
+      if (token !== this._recordsToken) return;
       // Sensors with statistics: raw history since the last compiled hour.
       const withStats = ids.filter((id) => !missing.includes(id));
-      if (withStats.length) {
-        const since = new Date(end.getTime() - 2 * 3600_000);
-        const raw = await fetchHistoryRaw(this._hass, withStats, since, end, false);
-        if (token !== this._recordsToken) return;
-        Object.assign(recent, ingestHistoryRaw(raw, keyById));
-      }
+      if (withStats.length) await loadRaw(withStats, new Date(end.getTime() - 2 * 3600_000), false);
+      if (token !== this._recordsToken) return;
       // The live state counts too.
       for (const id of ids) {
         const n = num(this._hass.states[id]?.state);
@@ -1144,12 +1203,11 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
       if (!st) return `${id}:missing`;
       return `${id}:${st.state}:${st.last_updated || ""}:${st.last_reported || ""}`;
     });
-    // Health auto-discovers batteries by prefix, so watch those too.
-    if (c.prefix && !c.hide_health && this._hass) {
-      for (const st of Object.values(this._hass.states)) {
-        if (st.attributes?.device_class === "battery" && st.entity_id.includes(`.${c.prefix}_`)) {
-          parts.push(`${st.entity_id}:${st.state}`);
-        }
+    // Watch exactly the batteries Station health renders.
+    if (!c.hide_health && this._hass) {
+      for (const id of batteryEntityIds(this._hass, c.prefix, batteryList(c.battery_entities))) {
+        const st = this._hass.states[id];
+        parts.push(`${id}:${st?.state}:${st?.last_updated || ""}`);
       }
     }
     parts.push(
@@ -1201,7 +1259,8 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
     const language = this._config.language || hass?.locale?.language || hass?.language || "en";
     this.locale = language;
     this.t = makeTranslator(language);
-    setNumberLocale(numberLocaleFor(hass, language));
+    this._numberLocale = numberLocaleFor(hass, language);
+    setNumberLocale(this._numberLocale);
     const { t } = this;
 
     const layout = this._config.layout || "full";
@@ -1261,7 +1320,7 @@ class MushroomWeatherStationCard extends HTMLElement implements View {
       const tSrc = this.conv(temp, "°F").src || "°F";
       const tF = toFahrenheit(num(temp.state) as number, tSrc);
       const rh = num(humidity?.state);
-      const mph = wind && num(wind.state) != null ? toMph(num(wind.state) as number, unitOf(wind) || "mph") : null;
+      const mph = wind && num(wind.state) != null ? toMph(num(wind.state) as number, this.conv(wind, "mph").src || "mph") : null;
       if (!available(feels)) {
         const fl = feelsLikeF(tF, rh, mph);
         if (fl != null) {

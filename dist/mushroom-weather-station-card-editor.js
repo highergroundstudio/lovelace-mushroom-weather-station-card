@@ -335,6 +335,7 @@ const de = {
   "forecast.pick_entity": "Wetter-Entität für die Vorhersage wählen.",
   "forecast.missing": "Wetter-Entität {id} fehlt.",
   "forecast.waiting": "Warte auf Tagesvorhersage von {id}…",
+  "forecast.waiting_hourly": "Warte auf stündliche Vorhersage von {id}…",
   "forecast.hourly_region": "Stündliche Vorhersage",
   "forecast.daily_region": "Tägliche Vorhersage",
   "forecast.item_aria": "{when}: {temp}, {pop} Niederschlagswahrscheinlichkeit",
@@ -377,6 +378,9 @@ const de = {
   "comfort.aria": "{pct} der erfassten Zeit lag im Komfortbereich",
   "alerts.default": "Wetterwarnung",
   "alerts.region": "Wetterwarnungen",
+  "health.all_online": "Alle {total} Sensoren online",
+  "health.online": "{ok} von {total} Sensoren online",
+  "health.battery_unknown": "unbekannt",
   "health.all_ok": "Alle {total} Sensoren melden",
   "health.reporting": "{ok} von {total} Sensoren melden",
   "health.offline": "Offline",
@@ -552,6 +556,7 @@ const en = {
   "forecast.pick_entity": "Pick a weather entity for forecast.",
   "forecast.missing": "Weather entity {id} is missing.",
   "forecast.waiting": "Waiting for daily forecast from {id}…",
+  "forecast.waiting_hourly": "Waiting for hourly forecast from {id}…",
   "forecast.hourly_region": "Hourly forecast",
   "forecast.daily_region": "Daily forecast",
   "forecast.item_aria": "{when}: {temp}, {pop} chance of precipitation",
@@ -600,6 +605,9 @@ const en = {
   "alerts.default": "Weather alert",
   "alerts.region": "Weather alerts",
   // Station health
+  "health.all_online": "All {total} sensors online",
+  "health.online": "{ok} of {total} sensors online",
+  "health.battery_unknown": "unknown",
   "health.all_ok": "All {total} sensors reporting",
   "health.reporting": "{ok} of {total} sensors reporting",
   "health.offline": "Offline",
@@ -837,6 +845,7 @@ const es = {
   "forecast.pick_entity": "Elige una entidad meteorológica para el pronóstico.",
   "forecast.missing": "Falta la entidad meteorológica {id}.",
   "forecast.waiting": "Esperando el pronóstico diario de {id}…",
+  "forecast.waiting_hourly": "Esperando el pronóstico por horas de {id}…",
   "forecast.hourly_region": "Pronóstico por horas",
   "forecast.daily_region": "Pronóstico diario",
   "forecast.item_aria": "{when}: {temp}, {pop} de probabilidad de precipitación",
@@ -879,6 +888,9 @@ const es = {
   "comfort.aria": "{pct} del tiempo registrado estuvo en la zona de confort",
   "alerts.default": "Aviso meteorológico",
   "alerts.region": "Avisos meteorológicos",
+  "health.all_online": "Los {total} sensores en línea",
+  "health.online": "{ok} de {total} sensores en línea",
+  "health.battery_unknown": "desconocido",
   "health.all_ok": "Los {total} sensores informan",
   "health.reporting": "{ok} de {total} sensores informan",
   "health.offline": "Sin conexión",
@@ -1046,6 +1058,7 @@ const fr = {
   "forecast.pick_entity": "Choisissez une entité météo pour les prévisions.",
   "forecast.missing": "L’entité météo {id} est introuvable.",
   "forecast.waiting": "En attente des prévisions de {id}…",
+  "forecast.waiting_hourly": "En attente des prévisions horaires de {id}…",
   "forecast.hourly_region": "Prévisions horaires",
   "forecast.daily_region": "Prévisions quotidiennes",
   "forecast.item_aria": "{when} : {temp}, {pop} de risque de précipitations",
@@ -1088,6 +1101,9 @@ const fr = {
   "comfort.aria": "{pct} du temps suivi était dans la zone de confort",
   "alerts.default": "Alerte météo",
   "alerts.region": "Alertes météo",
+  "health.all_online": "Les {total} capteurs sont en ligne",
+  "health.online": "{ok} capteurs sur {total} en ligne",
+  "health.battery_unknown": "inconnu",
   "health.all_ok": "Les {total} capteurs répondent",
   "health.reporting": "{ok} capteurs sur {total} répondent",
   "health.offline": "Hors ligne",
@@ -1254,6 +1270,7 @@ const nl = {
   "forecast.pick_entity": "Kies een weerentiteit voor de verwachting.",
   "forecast.missing": "Weerentiteit {id} ontbreekt.",
   "forecast.waiting": "Wachten op dagverwachting van {id}…",
+  "forecast.waiting_hourly": "Wachten op uurverwachting van {id}…",
   "forecast.hourly_region": "Uurverwachting",
   "forecast.daily_region": "Dagverwachting",
   "forecast.item_aria": "{when}: {temp}, {pop} kans op neerslag",
@@ -1296,6 +1313,9 @@ const nl = {
   "comfort.aria": "{pct} van de gemeten tijd lag in de comfortzone",
   "alerts.default": "Weerwaarschuwing",
   "alerts.region": "Weerwaarschuwingen",
+  "health.all_online": "Alle {total} sensoren online",
+  "health.online": "{ok} van {total} sensoren online",
+  "health.battery_unknown": "onbekend",
   "health.all_ok": "Alle {total} sensoren melden",
   "health.reporting": "{ok} van {total} sensoren melden",
   "health.offline": "Offline",
@@ -1475,6 +1495,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     this._tab = "layout";
     this._dragFrom = null;
     this._t = makeTranslator("en");
+    this._lang = "en";
   }
   setConfig(config) {
     this._config = { entities: {}, layout: "full", labels: {}, units: {}, ...config };
@@ -1483,6 +1504,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
+    const lang = resolveLanguage(this._config.language || hass?.locale?.language || hass?.language);
+    if (lang !== this._lang) this._built = false;
     if (this._built && this.shadowRoot) {
       this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((p) => {
         p.hass = hass;
@@ -1560,7 +1583,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   async _render() {
     if (!this._config) return;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-    this._t = makeTranslator(this._config.language || this._hass?.locale?.language || this._hass?.language);
+    this._lang = resolveLanguage(this._config.language || this._hass?.locale?.language || this._hass?.language);
+    this._t = makeTranslator(this._lang);
     const t = this._t;
     if (!this._loaded) {
       this.shadowRoot.innerHTML = `<p class="help">${esc(t("editor.loading"))}</p>`;

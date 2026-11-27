@@ -42,4 +42,16 @@ describe("morph", () => {
     morph(root, `<div class="hint">x</div><button data-key="t" data-entity="e">B</button>`);
     expect(document.activeElement).toBe(btn);
   });
+
+  it("keeps focus when a preceding sibling is removed", () => {
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    morph(root, `<div class="hint">x</div><button data-key="t" data-entity="e">A</button>`);
+    const btn = root.querySelector("button")!;
+    btn.focus();
+    morph(root, `<button data-key="t" data-entity="e">B</button>`);
+    expect(root.querySelector("button")).toBe(btn);
+    expect(document.activeElement).toBe(btn);
+    expect(root.children.length).toBe(1);
+  });
 });

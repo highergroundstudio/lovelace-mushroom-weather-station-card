@@ -95,6 +95,7 @@ const de: Translations = {
   "forecast.pick_entity": "Wetter-Entität für die Vorhersage wählen.",
   "forecast.missing": "Wetter-Entität {id} fehlt.",
   "forecast.waiting": "Warte auf Tagesvorhersage von {id}…",
+  "forecast.waiting_hourly": "Warte auf stündliche Vorhersage von {id}…",
   "forecast.hourly_region": "Stündliche Vorhersage",
   "forecast.daily_region": "Tägliche Vorhersage",
   "forecast.item_aria": "{when}: {temp}, {pop} Niederschlagswahrscheinlichkeit",
@@ -143,6 +144,9 @@ const de: Translations = {
   "alerts.default": "Wetterwarnung",
   "alerts.region": "Wetterwarnungen",
 
+  "health.all_online": "Alle {total} Sensoren online",
+  "health.online": "{ok} von {total} Sensoren online",
+  "health.battery_unknown": "unbekannt",
   "health.all_ok": "Alle {total} Sensoren melden",
   "health.reporting": "{ok} von {total} Sensoren melden",
   "health.offline": "Offline",

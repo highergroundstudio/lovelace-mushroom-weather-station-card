@@ -96,6 +96,7 @@ const es: Translations = {
   "forecast.pick_entity": "Elige una entidad meteorológica para el pronóstico.",
   "forecast.missing": "Falta la entidad meteorológica {id}.",
   "forecast.waiting": "Esperando el pronóstico diario de {id}…",
+  "forecast.waiting_hourly": "Esperando el pronóstico por horas de {id}…",
   "forecast.hourly_region": "Pronóstico por horas",
   "forecast.daily_region": "Pronóstico diario",
   "forecast.item_aria": "{when}: {temp}, {pop} de probabilidad de precipitación",
@@ -144,6 +145,9 @@ const es: Translations = {
   "alerts.default": "Aviso meteorológico",
   "alerts.region": "Avisos meteorológicos",
 
+  "health.all_online": "Los {total} sensores en línea",
+  "health.online": "{ok} de {total} sensores en línea",
+  "health.battery_unknown": "desconocido",
   "health.all_ok": "Los {total} sensores informan",
   "health.reporting": "{ok} de {total} sensores informan",
   "health.offline": "Sin conexión",

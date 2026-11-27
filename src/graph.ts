@@ -16,18 +16,39 @@ export const GRAPH_W = 320;
 export const GRAPH_H = 140;
 const PAD_Y = 8;
 
-export function graphStats(series: GraphSeries): GraphStats | null {
+/**
+ * Min / max / average of a series, ignoring outage markers. Statistics rows are
+ * equal-length buckets, so their mean is a plain average. Recorded states hold
+ * until the next change, so their average is weighted by how long each lasted
+ * (up to `windowEnd`, or the last sample).
+ */
+export function graphStats(series: GraphSeries, windowEnd?: number): GraphStats | null {
   const pts = series.points;
-  if (!pts.length) return null;
+  const real = pts.filter((p) => !p.gap);
+  if (!real.length) return null;
   let min = Infinity;
   let max = -Infinity;
-  let sum = 0;
-  for (const p of pts) {
+  for (const p of real) {
     min = Math.min(min, p.min ?? p.v);
     max = Math.max(max, p.max ?? p.v);
-    sum += p.v;
   }
-  return { min, max, avg: sum / pts.length, start: pts[0].t, end: pts[pts.length - 1].t };
+  let avg: number;
+  if (series.source === "history") {
+    const end = Math.max(windowEnd ?? pts[pts.length - 1].t, pts[pts.length - 1].t);
+    let weighted = 0;
+    let dur = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].gap) continue;
+      const until = i + 1 < pts.length ? pts[i + 1].t : end;
+      const d = Math.max(0, until - pts[i].t);
+      weighted += pts[i].v * d;
+      dur += d;
+    }
+    avg = dur > 0 ? weighted / dur : real.reduce((a, p) => a + p.v, 0) / real.length;
+  } else {
+    avg = real.reduce((a, p) => a + p.v, 0) / real.length;
+  }
+  return { min, max, avg, start: real[0].t, end: real[real.length - 1].t };
 }
 
 /** Break the line where the gap between samples is far above the typical spacing. */
@@ -47,7 +68,7 @@ export function graphSvg(
   width = GRAPH_W,
   height = GRAPH_H,
 ): string {
-  const stats = graphStats(series);
+  const stats = graphStats(series, window.end);
   if (!stats) return "";
   const pts = series.points;
   const span = Math.max(1, window.end - window.start);
@@ -61,14 +82,22 @@ export function graphSvg(
   // Change-only history holds each value until the next sample: draw steps.
   const stepped = series.source === "history";
   let line = "";
+  let drawing = false;
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
-    const broken = i === 0 || p.t - pts[i - 1].t > gap;
+    if (p.gap) {
+      // Outage: hold the last value up to when it went unavailable, then stop.
+      if (drawing && stepped) line += `H${x(p.t).toFixed(1)}`;
+      drawing = false;
+      continue;
+    }
+    const broken = !drawing || p.t - pts[i - 1].t > gap;
     if (broken) line += `M${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
     else if (stepped) line += `H${x(p.t).toFixed(1)}V${y(p.v).toFixed(1)}`;
     else line += `L${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
+    drawing = true;
   }
-  if (stepped && pts.length) line += `H${x(Math.min(window.end, Date.now())).toFixed(1)}`;
+  if (stepped && drawing) line += `H${x(Math.min(window.end, Date.now())).toFixed(1)}`;
 
   let band = "";
   if (pts.some((p) => p.min != null && p.max != null && p.max !== p.min)) {
@@ -83,7 +112,11 @@ export function graphSvg(
       run = [];
     };
     for (let i = 0; i < pts.length; i++) {
-      if (i > 0 && pts[i].t - pts[i - 1].t > gap) flush();
+      if (pts[i].gap) {
+        flush();
+        continue;
+      }
+      if (run.length && pts[i].t - run[run.length - 1].t > gap) flush();
       run.push(pts[i]);
     }
     flush();
@@ -115,7 +148,12 @@ export function nearestPoint(series: GraphSeries, window: { start: number; end: 
     else hi = mid;
   }
   if (lo > 0 && Math.abs(pts[lo - 1].t - t) < Math.abs(pts[lo].t - t)) lo -= 1;
-  return lo;
+  // Outage markers have no value; step to the nearest real sample.
+  for (let d = 0; d < pts.length; d++) {
+    if (lo - d >= 0 && !pts[lo - d].gap) return lo - d;
+    if (lo + d < pts.length && !pts[lo + d].gap) return lo + d;
+  }
+  return -1;
 }
 
 /** Chart y position for a value, matching `graphSvg` scaling. */

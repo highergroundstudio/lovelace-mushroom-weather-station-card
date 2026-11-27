@@ -13,7 +13,8 @@ Correctness, accessibility, and reach.
 - **Accessibility** — labelled tiles, charts and progress bars, keyboard-operable compass/rose/forecast, focus rings, modal dialog focus handling, reduced motion
 - **Editor previews** — visual layout picker, live record-window and seasonal-skin previews, comfort-band diagram, language picker
 - **Fixes** — rain month vs normal compared mm against inches in metric; lightning distance and precipitation peak were not unit-converted; Beaufort used km/h as mph in metric; hourly forecast strip could widen the card
-- **Project** — sections split into `src/sections/`, CI runs tests + build and fails on a stale `dist/`, GitHub Pages demo, real screenshots and GIF, 36 tests
+- **Review fixes** — graph: statistics failures fall back to recorded states, failed loads are not cached, unit changes reload an open graph, outages break the line, recorded-state averages are time-weighted, range buttons work with arrow keys; derived chips no longer open a mislabelled graph; number format no longer leaks between cards; a hold on one tile no longer swallows the next tap elsewhere; record timestamps never land in the future and one failed history call no longer drops the whole record book; Station health says "online" when report times are unknown, shows unavailable batteries as unknown, watches the same batteries it shows and refreshes with the header hidden; empty hourly forecast shows a waiting message; rain total bars compare like units; morph keeps focus when nodes move; editor re-translates when the HA language arrives; Pages workflow scoped to least privilege; screenshot server path check
+- **Project** — sections split into `src/sections/`, CI runs tests + build and fails on a stale `dist/`, GitHub Pages demo, real screenshots and GIF, 43 tests
 
 ## 0.8.0 — 2026-11-21
 

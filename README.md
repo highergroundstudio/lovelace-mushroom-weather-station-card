@@ -167,7 +167,7 @@ Home Assistant keeps raw history for `purge_keep_days` (10 days by default), so 
 
 ### Station health
 
-Lists mapped sensors that are `unavailable` or have not reported for `stale_minutes` (uses `last_reported`, HA 2024.3+), and every battery entity sharing your prefix — low ones first. Set `battery_entities` to choose them yourself, and the `signal_strength` entity slot to show gateway signal. The section hides itself when there is nothing to show.
+Lists mapped sensors that are `unavailable`, and every battery entity sharing your prefix — low ones first (unavailable batteries show "unknown"). Sensors that stay available but stop reporting are flagged as quiet after `stale_minutes` only when Home Assistant supplies `last_reported`; the dashboard's compressed state updates usually omit it, so the summary then says "online" rather than "reporting". Set `battery_entities` to choose them yourself, and the `signal_strength` entity slot to show gateway signal. The section hides itself when there is nothing to show.
 
 ### Calculated values
 

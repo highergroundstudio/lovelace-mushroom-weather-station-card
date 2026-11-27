@@ -14,7 +14,7 @@ import {
   storeThresholdValue,
   thresholdEditorUnit,
 } from "./helpers";
-import { LANGUAGES, makeTranslator, type TranslationKey, type Translate } from "./i18n";
+import { LANGUAGES, makeTranslator, resolveLanguage, type TranslationKey, type Translate } from "./i18n";
 import type { CardConfig, HomeAssistant, Layout, SectionId, UnitSystem } from "./types";
 import { CARD_VERSION as FALLBACK_VERSION } from "./version";
 
@@ -100,6 +100,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   private _tab: "layout" | "entities" | "display" | "order" = "layout";
   private _dragFrom: number | null = null;
   private _t: Translate = makeTranslator("en");
+  private _lang = "en";
 
   setConfig(config: CardConfig): void {
     this._config = { entities: {}, layout: "full", labels: {}, units: {}, ...config };
@@ -109,6 +110,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
 
   set hass(hass: HomeAssistant) {
     this._hass = hass;
+    // The editor may have been built (in English) before hass arrived; rebuild
+    // when the effective language changes instead of only refreshing pickers.
+    const lang = resolveLanguage(this._config.language || hass?.locale?.language || hass?.language);
+    if (lang !== this._lang) this._built = false;
     if (this._built && this.shadowRoot) {
       this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((p) => {
         (p as HTMLElement & { hass: HomeAssistant }).hass = hass;
@@ -222,7 +227,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   private async _render(): Promise<void> {
     if (!this._config) return;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
-    this._t = makeTranslator(this._config.language || this._hass?.locale?.language || this._hass?.language);
+    this._lang = resolveLanguage(this._config.language || this._hass?.locale?.language || this._hass?.language);
+    this._t = makeTranslator(this._lang);
     const t = this._t;
     if (!this._loaded) {
       this.shadowRoot!.innerHTML = `<p class="help">${esc(t("editor.loading"))}</p>`;

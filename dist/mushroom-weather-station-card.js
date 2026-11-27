@@ -1000,13 +1000,14 @@ async function fetchStatistics(hass, statisticIds, start, end, period) {
   });
   return parseStatistics(raw);
 }
-function rowExtreme(rows, mode) {
+function rowExtreme(rows, mode, now = Date.now()) {
   let best = null;
   for (const r of rows) {
     const v = mode === "max" ? r.max ?? r.state ?? r.mean : r.min ?? r.state ?? r.mean;
     if (v == null) continue;
     if (!best || (mode === "max" ? v > best.value : v < best.value)) {
-      best = { value: v, at: r.start + Math.max(0, r.end - r.start) / 2 };
+      const mid = r.start + Math.max(0, r.end - r.start) / 2;
+      best = { value: v, at: Math.max(r.start, Math.min(mid, now)) };
     }
   }
   return best;
@@ -1014,6 +1015,7 @@ function rowExtreme(rows, mode) {
 function pickExtreme(a, b, mode) {
   if (!a) return b;
   if (!b) return a;
+  if (Math.abs(a.value - b.value) < 1e-9) return b;
   if (mode === "max") return b.value > a.value ? b : a;
   return b.value < a.value ? b : a;
 }
@@ -1040,7 +1042,7 @@ function seriesFromStatistics(rows) {
 function seriesFromHistory(points) {
   return {
     source: "history",
-    points: points.filter((p) => !p.unavailable && Number.isFinite(p.state)).map((p) => ({ t: p.last_changed, v: p.state }))
+    points: points.filter((p) => p.unavailable || Number.isFinite(p.state)).map((p) => p.unavailable ? { t: p.last_changed, v: 0, gap: true } : { t: p.last_changed, v: p.state })
   };
 }
 const fToC = (f) => (f - 32) * (5 / 9);
@@ -1100,18 +1102,33 @@ function toMph(value, unit) {
 const GRAPH_W = 320;
 const GRAPH_H = 140;
 const PAD_Y = 8;
-function graphStats(series) {
+function graphStats(series, windowEnd) {
   const pts = series.points;
-  if (!pts.length) return null;
+  const real = pts.filter((p) => !p.gap);
+  if (!real.length) return null;
   let min = Infinity;
   let max = -Infinity;
-  let sum = 0;
-  for (const p of pts) {
+  for (const p of real) {
     min = Math.min(min, p.min ?? p.v);
     max = Math.max(max, p.max ?? p.v);
-    sum += p.v;
   }
-  return { min, max, avg: sum / pts.length, start: pts[0].t, end: pts[pts.length - 1].t };
+  let avg;
+  if (series.source === "history") {
+    const end = Math.max(windowEnd ?? pts[pts.length - 1].t, pts[pts.length - 1].t);
+    let weighted = 0;
+    let dur = 0;
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i].gap) continue;
+      const until = i + 1 < pts.length ? pts[i + 1].t : end;
+      const d = Math.max(0, until - pts[i].t);
+      weighted += pts[i].v * d;
+      dur += d;
+    }
+    avg = dur > 0 ? weighted / dur : real.reduce((a, p) => a + p.v, 0) / real.length;
+  } else {
+    avg = real.reduce((a, p) => a + p.v, 0) / real.length;
+  }
+  return { min, max, avg, start: real[0].t, end: real[real.length - 1].t };
 }
 function gapThreshold(times) {
   if (times.length < 3) return Infinity;
@@ -1122,7 +1139,7 @@ function gapThreshold(times) {
   return Math.max(median * 6, 3 * 36e5);
 }
 function graphSvg(series, window2, width = GRAPH_W, height = GRAPH_H) {
-  const stats = graphStats(series);
+  const stats = graphStats(series, window2.end);
   if (!stats) return "";
   const pts = series.points;
   const span = Math.max(1, window2.end - window2.start);
@@ -1134,14 +1151,21 @@ function graphSvg(series, window2, width = GRAPH_W, height = GRAPH_H) {
   const gap = gapThreshold(pts.map((p) => p.t));
   const stepped = series.source === "history";
   let line = "";
+  let drawing = false;
   for (let i = 0; i < pts.length; i++) {
     const p = pts[i];
-    const broken = i === 0 || p.t - pts[i - 1].t > gap;
+    if (p.gap) {
+      if (drawing && stepped) line += `H${x(p.t).toFixed(1)}`;
+      drawing = false;
+      continue;
+    }
+    const broken = !drawing || p.t - pts[i - 1].t > gap;
     if (broken) line += `M${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
     else if (stepped) line += `H${x(p.t).toFixed(1)}V${y(p.v).toFixed(1)}`;
     else line += `L${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
+    drawing = true;
   }
-  if (stepped && pts.length) line += `H${x(Math.min(window2.end, Date.now())).toFixed(1)}`;
+  if (stepped && drawing) line += `H${x(Math.min(window2.end, Date.now())).toFixed(1)}`;
   let band = "";
   if (pts.some((p) => p.min != null && p.max != null && p.max !== p.min)) {
     let run = [];
@@ -1154,7 +1178,11 @@ function graphSvg(series, window2, width = GRAPH_W, height = GRAPH_H) {
       run = [];
     };
     for (let i = 0; i < pts.length; i++) {
-      if (i > 0 && pts[i].t - pts[i - 1].t > gap) flush();
+      if (pts[i].gap) {
+        flush();
+        continue;
+      }
+      if (run.length && pts[i].t - run[run.length - 1].t > gap) flush();
       run.push(pts[i]);
     }
     flush();
@@ -1180,7 +1208,92 @@ function nearestPoint(series, window2, fraction) {
     else hi = mid;
   }
   if (lo > 0 && Math.abs(pts[lo - 1].t - t) < Math.abs(pts[lo].t - t)) lo -= 1;
-  return lo;
+  for (let d = 0; d < pts.length; d++) {
+    if (lo - d >= 0 && !pts[lo - d].gap) return lo - d;
+    if (lo + d < pts.length && !pts[lo + d].gap) return lo + d;
+  }
+  return -1;
+}
+const NON_SENSOR_KEYS = /* @__PURE__ */ new Set(["battery", "signal_strength"]);
+function friendlyName(st, prefix) {
+  const raw = String(st?.attributes?.friendly_name || st?.entity_id || "");
+  const p = String(prefix || "").trim();
+  if (!p) return raw;
+  const re = new RegExp(`^${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s_-]+`, "i");
+  return raw.replace(re, "") || raw;
+}
+function isBatteryEntity(st) {
+  const dc = st.attributes?.device_class;
+  if (dc === "battery") return true;
+  return /_battery(_\d+)?$/.test(st.entity_id) && /^(sensor|binary_sensor)\./.test(st.entity_id);
+}
+function batteryList(raw) {
+  if (!raw) return void 0;
+  const list = Array.isArray(raw) ? raw : String(raw).split(",");
+  const out = list.map((s) => String(s).trim()).filter(Boolean);
+  return out.length ? out : void 0;
+}
+function cleanPrefix(prefix) {
+  return String(prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
+}
+function batteryEntityIds(hass, prefix, explicit) {
+  if (!hass) return [];
+  if (explicit?.length) return [...new Set(explicit)];
+  const p = cleanPrefix(prefix);
+  if (!p) return [];
+  return Object.values(hass.states).filter((st) => (st.entity_id.split(".")[1] || "").startsWith(`${p}_`) && isBatteryEntity(st)).map((st) => st.entity_id);
+}
+function discoverBatteries(hass, prefix, explicit, threshold) {
+  if (!hass) return [];
+  const ids = batteryEntityIds(hass, prefix, explicit);
+  const p = cleanPrefix(prefix);
+  const limit = threshold == null || threshold === "" ? 20 : Number(threshold);
+  const out = [];
+  for (const id of ids) {
+    const st = hass.states[id];
+    if (!st) continue;
+    const level = num(st.state);
+    const raw = String(st.state).toLowerCase();
+    const known = available(st) && (level != null || ["on", "off", "low", "normal", "ok"].includes(raw));
+    const low = level != null ? Number.isFinite(limit) && level <= limit : raw === "on" || raw === "low";
+    const icon = !known ? "mdi:battery-unknown" : low ? "mdi:battery-alert" : level == null ? "mdi:battery" : level >= 95 ? "mdi:battery" : `mdi:battery-${Math.max(10, Math.min(90, Math.round(level / 10) * 10))}`;
+    out.push({ entityId: id, name: friendlyName(st, p), level, low, known, icon });
+  }
+  return out.sort((a, b) => Number(b.low) - Number(a.low) || a.name.localeCompare(b.name));
+}
+function lastReportMs(st) {
+  const raw = st?.last_reported;
+  if (!raw) return null;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+function healthReport(hass, entities, opts = {}) {
+  const report = { total: 0, ok: 0, freshnessKnown: false, offline: [], stale: [], batteries: [] };
+  if (!hass) return report;
+  const now = opts.now ?? Date.now();
+  const staleMs = (opts.staleMinutes ?? 30) > 0 ? (opts.staleMinutes ?? 30) * 6e4 : 0;
+  const seen = /* @__PURE__ */ new Set();
+  for (const [key, id] of Object.entries(entities || {})) {
+    if (!id || seen.has(id) || NON_SENSOR_KEYS.has(key)) continue;
+    const st = hass.states[id];
+    if (!st) continue;
+    seen.add(id);
+    report.total += 1;
+    const name = friendlyName(st, opts.prefix);
+    if (!available(st)) {
+      report.offline.push({ key, entityId: id, name });
+      continue;
+    }
+    const reported = lastReportMs(st);
+    if (reported != null) report.freshnessKnown = true;
+    if (staleMs && reported != null && now - reported > staleMs) {
+      report.stale.push({ key, entityId: id, name, ageMs: now - reported });
+      continue;
+    }
+    report.ok += 1;
+  }
+  report.batteries = discoverBatteries(hass, opts.prefix, opts.batteryEntities, opts.batteryThreshold);
+  return report;
 }
 const de = {
   "section.conditions": "Bedingungen",
@@ -1273,6 +1386,7 @@ const de = {
   "forecast.pick_entity": "Wetter-Entität für die Vorhersage wählen.",
   "forecast.missing": "Wetter-Entität {id} fehlt.",
   "forecast.waiting": "Warte auf Tagesvorhersage von {id}…",
+  "forecast.waiting_hourly": "Warte auf stündliche Vorhersage von {id}…",
   "forecast.hourly_region": "Stündliche Vorhersage",
   "forecast.daily_region": "Tägliche Vorhersage",
   "forecast.item_aria": "{when}: {temp}, {pop} Niederschlagswahrscheinlichkeit",
@@ -1315,6 +1429,9 @@ const de = {
   "comfort.aria": "{pct} der erfassten Zeit lag im Komfortbereich",
   "alerts.default": "Wetterwarnung",
   "alerts.region": "Wetterwarnungen",
+  "health.all_online": "Alle {total} Sensoren online",
+  "health.online": "{ok} von {total} Sensoren online",
+  "health.battery_unknown": "unbekannt",
   "health.all_ok": "Alle {total} Sensoren melden",
   "health.reporting": "{ok} von {total} Sensoren melden",
   "health.offline": "Offline",
@@ -1490,6 +1607,7 @@ const en = {
   "forecast.pick_entity": "Pick a weather entity for forecast.",
   "forecast.missing": "Weather entity {id} is missing.",
   "forecast.waiting": "Waiting for daily forecast from {id}…",
+  "forecast.waiting_hourly": "Waiting for hourly forecast from {id}…",
   "forecast.hourly_region": "Hourly forecast",
   "forecast.daily_region": "Daily forecast",
   "forecast.item_aria": "{when}: {temp}, {pop} chance of precipitation",
@@ -1538,6 +1656,9 @@ const en = {
   "alerts.default": "Weather alert",
   "alerts.region": "Weather alerts",
   // Station health
+  "health.all_online": "All {total} sensors online",
+  "health.online": "{ok} of {total} sensors online",
+  "health.battery_unknown": "unknown",
   "health.all_ok": "All {total} sensors reporting",
   "health.reporting": "{ok} of {total} sensors reporting",
   "health.offline": "Offline",
@@ -1775,6 +1896,7 @@ const es = {
   "forecast.pick_entity": "Elige una entidad meteorológica para el pronóstico.",
   "forecast.missing": "Falta la entidad meteorológica {id}.",
   "forecast.waiting": "Esperando el pronóstico diario de {id}…",
+  "forecast.waiting_hourly": "Esperando el pronóstico por horas de {id}…",
   "forecast.hourly_region": "Pronóstico por horas",
   "forecast.daily_region": "Pronóstico diario",
   "forecast.item_aria": "{when}: {temp}, {pop} de probabilidad de precipitación",
@@ -1817,6 +1939,9 @@ const es = {
   "comfort.aria": "{pct} del tiempo registrado estuvo en la zona de confort",
   "alerts.default": "Aviso meteorológico",
   "alerts.region": "Avisos meteorológicos",
+  "health.all_online": "Los {total} sensores en línea",
+  "health.online": "{ok} de {total} sensores en línea",
+  "health.battery_unknown": "desconocido",
   "health.all_ok": "Los {total} sensores informan",
   "health.reporting": "{ok} de {total} sensores informan",
   "health.offline": "Sin conexión",
@@ -1984,6 +2109,7 @@ const fr = {
   "forecast.pick_entity": "Choisissez une entité météo pour les prévisions.",
   "forecast.missing": "L’entité météo {id} est introuvable.",
   "forecast.waiting": "En attente des prévisions de {id}…",
+  "forecast.waiting_hourly": "En attente des prévisions horaires de {id}…",
   "forecast.hourly_region": "Prévisions horaires",
   "forecast.daily_region": "Prévisions quotidiennes",
   "forecast.item_aria": "{when} : {temp}, {pop} de risque de précipitations",
@@ -2026,6 +2152,9 @@ const fr = {
   "comfort.aria": "{pct} du temps suivi était dans la zone de confort",
   "alerts.default": "Alerte météo",
   "alerts.region": "Alertes météo",
+  "health.all_online": "Les {total} capteurs sont en ligne",
+  "health.online": "{ok} capteurs sur {total} en ligne",
+  "health.battery_unknown": "inconnu",
   "health.all_ok": "Les {total} capteurs répondent",
   "health.reporting": "{ok} capteurs sur {total} répondent",
   "health.offline": "Hors ligne",
@@ -2192,6 +2321,7 @@ const nl = {
   "forecast.pick_entity": "Kies een weerentiteit voor de verwachting.",
   "forecast.missing": "Weerentiteit {id} ontbreekt.",
   "forecast.waiting": "Wachten op dagverwachting van {id}…",
+  "forecast.waiting_hourly": "Wachten op uurverwachting van {id}…",
   "forecast.hourly_region": "Uurverwachting",
   "forecast.daily_region": "Dagverwachting",
   "forecast.item_aria": "{when}: {temp}, {pop} kans op neerslag",
@@ -2234,6 +2364,9 @@ const nl = {
   "comfort.aria": "{pct} van de gemeten tijd lag in de comfortzone",
   "alerts.default": "Weerwaarschuwing",
   "alerts.region": "Weerwaarschuwingen",
+  "health.all_online": "Alle {total} sensoren online",
+  "health.online": "{ok} van {total} sensoren online",
+  "health.battery_unknown": "onbekend",
   "health.all_ok": "Alle {total} sensoren melden",
   "health.reporting": "{ok} van {total} sensoren melden",
   "health.offline": "Offline",
@@ -2384,6 +2517,17 @@ function morphNode(from, to) {
   if (from.tagName.includes("-")) return;
   morphChildren(from, to);
 }
+function moveBefore(parent, node, ref) {
+  const p = parent;
+  if (typeof p.moveBefore === "function") {
+    try {
+      p.moveBefore(node, ref);
+      return;
+    } catch {
+    }
+  }
+  parent.insertBefore(node, ref);
+}
 function morphChildren(parent, next) {
   const oldKeyed = /* @__PURE__ */ new Map();
   for (let c = parent.firstChild; c; c = c.nextSibling) {
@@ -2406,7 +2550,7 @@ function morphChildren(parent, next) {
       match = cursor;
     }
     if (match) {
-      if (match !== cursor) parent.insertBefore(match, cursor);
+      if (match !== cursor) moveBefore(parent, match, cursor);
       else cursor = cursor.nextSibling;
       morphNode(match, incoming);
     } else {
@@ -2426,7 +2570,12 @@ function morphChildren(parent, next) {
 function morph(target, html) {
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
+  const root = target.getRootNode();
+  const focused = root.activeElement;
   morphChildren(target, tpl.content);
+  if (focused && focused.isConnected && target.contains(focused) && root.activeElement !== focused) {
+    focused.focus({ preventScroll: true });
+  }
 }
 const renderAir = (v, ctx) => {
   if (!ctx.showAir) return "";
@@ -2522,7 +2671,9 @@ function hourly(v) {
   if (!id) return "";
   const wanted = Math.min(24, Math.max(6, Number(v.config.hourly_forecast_hours) || 24));
   const hours = (v.forecastHours || []).slice(0, wanted);
-  if (!hours.length) return "";
+  if (!hours.length) {
+    return entityState(v.hass, id) ? `<div class="hint">${esc(v.t("forecast.waiting_hourly", { id }))}</div>` : "";
+  }
   const tempUnit = entityState(v.hass, id)?.attributes?.temperature_unit || "";
   return `<div class="forecast hourly" role="group" aria-label="${esc(v.t("forecast.hourly_region"))}">
     ${hours.map((h) => {
@@ -2569,81 +2720,6 @@ const renderForecast = (v, ctx) => {
   }
   return v.wrapSection("forecast", ctx.compact, body);
 };
-const NON_SENSOR_KEYS = /* @__PURE__ */ new Set(["battery", "signal_strength"]);
-function friendlyName(st, prefix) {
-  const raw = String(st?.attributes?.friendly_name || st?.entity_id || "");
-  const p = String(prefix || "").trim();
-  if (!p) return raw;
-  const re = new RegExp(`^${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s_-]+`, "i");
-  return raw.replace(re, "") || raw;
-}
-function isBatteryEntity(st) {
-  const dc = st.attributes?.device_class;
-  if (dc === "battery") return true;
-  return /_battery(_\d+)?$/.test(st.entity_id) && /^(sensor|binary_sensor)\./.test(st.entity_id);
-}
-function discoverBatteries(hass, prefix, explicit, threshold) {
-  if (!hass) return [];
-  const ids = /* @__PURE__ */ new Set();
-  for (const id of explicit || []) if (id) ids.add(id.trim());
-  const p = String(prefix || "").trim().replace(/^sensor\./, "").replace(/_+$/, "");
-  if (!explicit?.length && p) {
-    for (const st of Object.values(hass.states)) {
-      const local = st.entity_id.split(".")[1] || "";
-      if (local.startsWith(`${p}_`) && isBatteryEntity(st)) ids.add(st.entity_id);
-    }
-  }
-  const limit = threshold == null || threshold === "" ? 20 : Number(threshold);
-  const out = [];
-  for (const id of ids) {
-    const st = hass.states[id];
-    if (!st) continue;
-    const level = num(st.state);
-    const low = level != null ? Number.isFinite(limit) && level <= limit : st.state === "on" || st.state.toLowerCase() === "low";
-    const icon = !available(st) ? "mdi:battery-unknown" : low ? "mdi:battery-alert" : level == null ? "mdi:battery" : level >= 95 ? "mdi:battery" : `mdi:battery-${Math.max(10, Math.min(90, Math.round(level / 10) * 10))}`;
-    out.push({ entityId: id, name: friendlyName(st, p), level, low, icon });
-  }
-  return out.sort((a, b) => Number(b.low) - Number(a.low) || a.name.localeCompare(b.name));
-}
-function lastReportMs(st) {
-  const raw = st?.last_reported;
-  if (!raw) return null;
-  const t = new Date(raw).getTime();
-  return Number.isFinite(t) ? t : null;
-}
-function healthReport(hass, entities, opts = {}) {
-  const report = { total: 0, ok: 0, offline: [], stale: [], batteries: [] };
-  if (!hass) return report;
-  const now = opts.now ?? Date.now();
-  const staleMs = (opts.staleMinutes ?? 30) > 0 ? (opts.staleMinutes ?? 30) * 6e4 : 0;
-  const seen = /* @__PURE__ */ new Set();
-  for (const [key, id] of Object.entries(entities || {})) {
-    if (!id || seen.has(id) || NON_SENSOR_KEYS.has(key)) continue;
-    const st = hass.states[id];
-    if (!st) continue;
-    seen.add(id);
-    report.total += 1;
-    const name = friendlyName(st, opts.prefix);
-    if (!available(st)) {
-      report.offline.push({ key, entityId: id, name });
-      continue;
-    }
-    const reported = lastReportMs(st);
-    if (staleMs && reported != null && now - reported > staleMs) {
-      report.stale.push({ key, entityId: id, name, ageMs: now - reported });
-      continue;
-    }
-    report.ok += 1;
-  }
-  report.batteries = discoverBatteries(hass, opts.prefix, opts.batteryEntities, opts.batteryThreshold);
-  return report;
-}
-function batteryList(raw) {
-  if (!raw) return void 0;
-  const list = Array.isArray(raw) ? raw : String(raw).split(",");
-  const out = list.map((s) => String(s).trim()).filter(Boolean);
-  return out.length ? out : void 0;
-}
 const renderHealth = (v, ctx) => {
   if (!ctx.showHealth || !v.hass) return "";
   const { t } = v;
@@ -2658,7 +2734,7 @@ const renderHealth = (v, ctx) => {
   if (!report.batteries.length && !signal && !problems) return "";
   if (!report.total && !report.batteries.length && !signal) return "";
   const ok = problems === 0;
-  const summary = ok ? t("health.all_ok", { total: report.total }) : t("health.reporting", { ok: report.ok, total: report.total });
+  const summary = report.freshnessKnown ? ok ? t("health.all_ok", { total: report.total }) : t("health.reporting", { ok: report.ok, total: report.total }) : ok ? t("health.all_online", { total: report.total }) : t("health.online", { ok: report.ok, total: report.total });
   const issues = [
     ...report.offline.map((s) => ({ ...s, note: t("health.offline"), icon: "mdi:lan-disconnect", cls: "bad" })),
     ...report.stale.map((s) => ({
@@ -2675,7 +2751,7 @@ const renderHealth = (v, ctx) => {
         </button></li>`).join("")}</ul>` : "";
   const battHtml = report.batteries.length ? `<div class="health-sub">${esc(t("health.batteries"))}</div>
       <ul class="health-batteries">${report.batteries.map((b) => {
-    const value = b.level != null ? `${Math.round(b.level)}%` : b.low ? t("health.battery_low") : t("health.battery_ok");
+    const value = !b.known ? t("health.battery_unknown") : b.level != null ? `${Math.round(b.level)}%` : b.low ? t("health.battery_low") : t("health.battery_ok");
     return `<li><button class="health-batt ${b.low ? "low" : ""}" data-key="battery_${esc(b.entityId)}" data-entity="${esc(b.entityId)}" aria-label="${esc(`${b.name}: ${value}${b.low && b.level != null ? ` (${t("health.battery_low")})` : ""}`)}">
             <ha-icon icon="${b.icon}" aria-hidden="true"></ha-icon>
             <span class="health-name">${esc(b.name)}</span>
@@ -2763,12 +2839,16 @@ function rainGoal(v, ctx) {
 const renderRain = (v, ctx) => {
   if (!ctx.showRain) return "";
   const { t } = v;
+  const inInches = (st) => {
+    const c = v.conv(st, "in");
+    return c.raw == null ? null : convertValue(c.raw, c.src || "in", "imperial").value;
+  };
   const totals = {
-    today: num(ctx.today?.state),
-    event: num(ctx.event?.state),
-    week: num(ctx.week?.state),
-    month: num(ctx.month?.state),
-    year: num(ctx.year?.state)
+    today: inInches(ctx.today),
+    event: inInches(ctx.event),
+    week: inInches(ctx.week),
+    month: inInches(ctx.month),
+    year: inInches(ctx.year)
   };
   const ariaTotals = t("rain.spark_aria", {
     today: v.fmt("rain_today", ctx.today, 2, "in"),
@@ -2970,7 +3050,7 @@ function renderChips(v, ctx, expanded) {
   const uv = num(ctx.uv?.state);
   const primary = [
     { key: "temperature", st: ctx.temp, icon: "mdi:thermometer", text: ctx.t.value == null ? "—" : `${Math.round(ctx.t.value)}°`, label: t("tile.temperature") },
-    { key: "feels_like", st: ctx.feels, icon: "mdi:sun-thermometer", text: ctx.f.value == null ? "—" : `${Math.round(ctx.f.value)}°`, label: t("tile.feels_like") },
+    { key: "feels_like", st: ctx.feels, icon: "mdi:sun-thermometer", text: ctx.f.value == null ? "—" : `${Math.round(ctx.f.value)}°`, label: ctx.feelsDerived ? t("derived.suffix", { label: t("tile.feels_like") }) : t("tile.feels_like"), derived: ctx.feelsDerived },
     { key: "humidity", st: ctx.humidity, icon: "mdi:water-percent", text: h == null ? "—" : `${Math.round(h)}%`, label: t("tile.humidity") },
     { key: "rain_today", st: ctx.today, icon: ctx.raining ? "mdi:weather-pouring" : "mdi:weather-rainy", text: v.fmt("rain_today", ctx.today, 2, "in"), label: t("tile.rain_today") },
     { key: "wind_speed", st: ctx.wind, icon: "mdi:weather-windy", text: v.fmt("wind_speed", ctx.wind, 0, "mph"), label: t("tile.wind_speed") }
@@ -2980,7 +3060,7 @@ function renderChips(v, ctx, expanded) {
     { key: "uv", st: ctx.uv, icon: "mdi:weather-sunny-alert", text: uv == null ? "—" : `${fmtNum(uv, 0)} UV`, label: t("tile.uv") },
     { key: "wind_gust", st: ctx.gust, icon: "mdi:windsock", text: v.fmt("wind_gust", ctx.gust, 0, "mph"), label: t("tile.wind_gust") }
   ].filter((c) => !!c.st);
-  const chip = (c) => `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st.entity_id)}" aria-label="${esc(`${v.label(c.key, c.label)}: ${c.text}`)}"><ha-icon icon="${c.icon}" aria-hidden="true"></ha-icon><span aria-hidden="true">${esc(c.text)}</span></button>`;
+  const chip = (c) => `<button class="chip" data-key="${c.key}" data-entity="${esc(c.st.entity_id)}"${c.derived ? ` data-derived="1" title="${esc(t("derived.title"))}"` : ""} aria-label="${esc(`${v.label(c.key, c.label)}: ${c.text}`)}"><ha-icon icon="${c.icon}" aria-hidden="true"></ha-icon><span aria-hidden="true">${esc(c.text)}</span></button>`;
   const toggle = expanded ? t("chips.less") : t("chips.more");
   return `<div class="chips-bar ${expanded ? "expanded" : ""}" role="group" aria-label="${esc(t("chips.region"))}">
     <div class="chips">
@@ -3805,8 +3885,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._graphCache = /* @__PURE__ */ new Map();
     this._graphToken = 0;
     this._holdTimer = null;
-    this._held = false;
+    this._heldEl = null;
     this._holdEl = null;
+    this._numberLocale = "en";
     this.forecastDays = [];
     this.forecastHours = [];
     this.history = {};
@@ -3899,12 +3980,18 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     this._recordsFetchedAt = 0;
     this._recordsPending = false;
     this._graphCache.clear();
+    this._graphToken++;
     this._configStamp++;
     this._renderSignature = null;
     void this._ensureForecastSub();
     void this._ensureHistory();
     void this._ensureRecords();
     this._render(true);
+    if (this._graph) {
+      this._graph = { ...this._graph, loading: true, cursor: -1 };
+      this._renderGraph();
+      void this._loadGraph();
+    }
   }
   set hass(hass) {
     this._hass = hass;
@@ -4114,16 +4201,19 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (!el?.dataset.entity) return;
       const { hold } = this._actionsFor(el.dataset.key || "", el);
       if (!hold) return;
-      this._held = false;
+      this._heldEl = null;
       this._clearHold();
       this._holdEl = el;
       this._holdTimer = window.setTimeout(() => {
-        this._held = true;
+        this._heldEl = el;
         this._handleAction(hold, el.dataset.entity || "", el.dataset.key, el);
       }, 500);
     });
     root.addEventListener("pointerup", () => this._clearHold());
-    root.addEventListener("pointercancel", () => this._clearHold());
+    root.addEventListener("pointercancel", () => {
+      this._clearHold();
+      this._heldEl = null;
+    });
     root.addEventListener("pointerleave", (ev) => {
       if (ev.target === this._holdEl) this._clearHold();
     }, true);
@@ -4149,10 +4239,9 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       return;
     }
     ev.preventDefault();
-    if (this._held) {
-      this._held = false;
-      return;
-    }
+    const held = this._heldEl;
+    this._heldEl = null;
+    if (held && held === el) return;
     const key = el.dataset.key || "";
     if (key === "__chips_expand") {
       this._chipsExpanded = !this._chipsExpanded;
@@ -4167,6 +4256,10 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const target = ev.target;
     if (target?.classList.contains("graph-chart")) {
       this._onGraphKey(ev);
+      return;
+    }
+    if (target?.classList.contains("graph-range")) {
+      this._onRangeKey(ev, target);
       return;
     }
     if ((ev.key === "Enter" || ev.key === " ") && target && target.tagName !== "BUTTON" && target.getAttribute("role") === "button") {
@@ -4221,7 +4314,24 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       this.dispatchEvent(new CustomEvent("hass-more-info", { bubbles: true, composed: true, detail: { entityId: id } }));
     }
   }
+  /** WAI-ARIA radio group: arrows move both selection and focus. */
+  _onRangeKey(ev, target) {
+    const ranges = ["24h", "7d", "30d"];
+    const i = ranges.indexOf(target.dataset.range);
+    let next = -1;
+    if (ev.key === "ArrowRight" || ev.key === "ArrowDown") next = (i + 1) % ranges.length;
+    else if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") next = (i - 1 + ranges.length) % ranges.length;
+    else if (ev.key === "Home") next = 0;
+    else if (ev.key === "End") next = ranges.length - 1;
+    if (next < 0 || i < 0) return;
+    ev.preventDefault();
+    const btn = this._dialog?.querySelector(`.graph-range[data-range="${ranges[next]}"]`);
+    if (!btn) return;
+    this._onDialogAction("graph-range", btn);
+    btn.focus();
+  }
   _onDialogClosed() {
+    if (this._dialog?.open) return;
     const opener = this._graph?.opener;
     this._graph = null;
     this._graphToken++;
@@ -4244,30 +4354,38 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       const src = this._config?.units_source?.[g.entityId] || unitOf(st);
       const target = this._config?.unit_system || "native";
       const cv = (n) => convertValue(n, src, target).value ?? n;
-      try {
-        if (g.range !== "24h") {
+      let failed = false;
+      if (g.range !== "24h") {
+        try {
           const stats = await fetchStatistics(this._hass, [g.entityId], new Date(window2.start), new Date(window2.end), "hour");
           const rows = stats?.[g.entityId] || [];
           if (rows.length) series = seriesFromStatistics(rows);
+        } catch {
         }
-        if (!series || !series.points.length) {
+      }
+      if (!series || !series.points.length) {
+        try {
           const raw = await fetchHistoryRaw(this._hass, [g.entityId], new Date(window2.start), new Date(window2.end), false);
           const parsed = ingestHistoryRaw(raw, { [g.entityId]: "v" }).v || [];
           series = seriesFromHistory(parsed);
+        } catch {
+          failed = true;
+          series = { source: "history", points: [] };
         }
-      } catch {
-        series = { source: "history", points: [] };
       }
       series = {
         source: series.source,
         points: series.points.map((p) => ({
           t: p.t,
-          v: cv(p.v),
+          v: p.gap ? p.v : cv(p.v),
+          ...p.gap ? { gap: true } : {},
           ...p.min != null ? { min: cv(p.min) } : {},
           ...p.max != null ? { max: cv(p.max) } : {}
         }))
       };
-      this._graphCache.set(cacheKey, { at: Date.now(), series, window: window2 });
+      if (token === this._graphToken && !failed) {
+        this._graphCache.set(cacheKey, { at: Date.now(), series, window: window2 });
+      }
     }
     if (token !== this._graphToken || !this._graph) return;
     this._graph = { ...this._graph, loading: false, series, window: window2 };
@@ -4284,11 +4402,12 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   _renderGraph() {
     const g = this._graph;
     if (!g || !this._dialog) return;
+    setNumberLocale(this._numberLocale);
     const { t } = this;
     const unit = g.unit ? ` ${g.unit}` : "";
     const val = (n) => `${fmtNum(n, Math.abs(n) >= 100 ? 0 : Math.abs(n) >= 10 ? 1 : 2)}${unit}`;
     const ranges = ["24h", "7d", "30d"];
-    const stats = g.series ? graphStats(g.series) : null;
+    const stats = g.series ? graphStats(g.series, g.window.end) : null;
     let body;
     if (g.loading) {
       body = `<div class="graph-empty" role="status">${esc(t("graph.loading"))}</div>`;
@@ -4331,6 +4450,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
   _paintGraphCursor() {
     const g = this._graph;
     if (!g?.series || !this._dialog) return;
+    setNumberLocale(this._numberLocale);
     const line = this._dialog.querySelector(".graph-cursor");
     const readout = this._dialog.querySelector(".graph-readout");
     const p = g.series.points[g.cursor];
@@ -4366,10 +4486,15 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const last = g.series.points.length - 1;
     const step = Math.max(1, Math.round(g.series.points.length / 48));
     let next = g.cursor < 0 ? last : g.cursor;
-    if (ev.key === "ArrowLeft") next = Math.max(0, next - step);
-    else if (ev.key === "ArrowRight") next = Math.min(last, next + step);
-    else if (ev.key === "Home") next = 0;
-    else if (ev.key === "End") next = last;
+    const pts = g.series.points;
+    const real = (i, dir) => {
+      while (i >= 0 && i <= last && pts[i].gap) i += dir;
+      return i < 0 || i > last ? g.cursor < 0 ? last : g.cursor : i;
+    };
+    if (ev.key === "ArrowLeft") next = real(Math.max(0, next - step), -1);
+    else if (ev.key === "ArrowRight") next = real(Math.min(last, next + step), 1);
+    else if (ev.key === "Home") next = real(0, 1);
+    else if (ev.key === "End") next = real(last, -1);
     else return;
     ev.preventDefault();
     g.cursor = next;
@@ -4389,7 +4514,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     return pressureTrendMeta(value, this._prevPressure);
   }
   _ensureStaleTimer() {
-    if (this._config?.show_updated === false) {
+    const healthNeedsTicks = !this._config?.hide_health && Number(this._config?.stale_minutes ?? 30) > 0;
+    if (this._config?.show_updated === false && !healthNeedsTicks) {
       if (this._staleTimer) {
         window.clearInterval(this._staleTimer);
         this._staleTimer = null;
@@ -4646,18 +4772,18 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
         else missing.push(id);
       }
       const recent = {};
-      if (missing.length) {
-        const raw = await fetchHistoryRaw(this._hass, missing, start, end, true);
-        if (token !== this._recordsToken) return;
-        Object.assign(recent, ingestHistoryRaw(raw, keyById));
-      }
+      const loadRaw = async (list, from, sigOnly) => {
+        try {
+          const raw = await fetchHistoryRaw(this._hass, list, from, end, sigOnly);
+          if (token === this._recordsToken) Object.assign(recent, ingestHistoryRaw(raw, keyById));
+        } catch {
+        }
+      };
+      if (missing.length) await loadRaw(missing, start, true);
+      if (token !== this._recordsToken) return;
       const withStats = ids.filter((id) => !missing.includes(id));
-      if (withStats.length) {
-        const since = new Date(end.getTime() - 2 * 36e5);
-        const raw = await fetchHistoryRaw(this._hass, withStats, since, end, false);
-        if (token !== this._recordsToken) return;
-        Object.assign(recent, ingestHistoryRaw(raw, keyById));
-      }
+      if (withStats.length) await loadRaw(withStats, new Date(end.getTime() - 2 * 36e5), false);
+      if (token !== this._recordsToken) return;
       for (const id of ids) {
         const n = num(this._hass.states[id]?.state);
         if (n == null) continue;
@@ -4689,11 +4815,10 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       if (!st) return `${id}:missing`;
       return `${id}:${st.state}:${st.last_updated || ""}:${st.last_reported || ""}`;
     });
-    if (c.prefix && !c.hide_health && this._hass) {
-      for (const st of Object.values(this._hass.states)) {
-        if (st.attributes?.device_class === "battery" && st.entity_id.includes(`.${c.prefix}_`)) {
-          parts.push(`${st.entity_id}:${st.state}`);
-        }
+    if (!c.hide_health && this._hass) {
+      for (const id of batteryEntityIds(this._hass, c.prefix, batteryList(c.battery_entities))) {
+        const st = this._hass.states[id];
+        parts.push(`${id}:${st?.state}:${st?.last_updated || ""}`);
       }
     }
     parts.push(
@@ -4740,7 +4865,8 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
     const language = this._config.language || hass?.locale?.language || hass?.language || "en";
     this.locale = language;
     this.t = makeTranslator(language);
-    setNumberLocale(numberLocaleFor(hass, language));
+    this._numberLocale = numberLocaleFor(hass, language);
+    setNumberLocale(this._numberLocale);
     const { t } = this;
     const layout = this._config.layout || "full";
     const compact = layout === "compact";
@@ -4796,7 +4922,7 @@ const _MushroomWeatherStationCard = class _MushroomWeatherStationCard extends HT
       const tSrc = this.conv(temp, "°F").src || "°F";
       const tF = toFahrenheit(num(temp.state), tSrc);
       const rh = num(humidity?.state);
-      const mph = wind && num(wind.state) != null ? toMph(num(wind.state), unitOf(wind) || "mph") : null;
+      const mph = wind && num(wind.state) != null ? toMph(num(wind.state), this.conv(wind, "mph").src || "mph") : null;
       if (!available(feels)) {
         const fl = feelsLikeF(tF, rh, mph);
         if (fl != null) {

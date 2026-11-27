@@ -158,14 +158,16 @@ export async function fetchStatistics(
   return parseStatistics(raw);
 }
 
-function rowExtreme(rows: StatRow[], mode: "min" | "max"): HistoryExtreme | null {
+function rowExtreme(rows: StatRow[], mode: "min" | "max", now = Date.now()): HistoryExtreme | null {
   let best: HistoryExtreme | null = null;
   for (const r of rows) {
     const v = mode === "max" ? (r.max ?? r.state ?? r.mean) : (r.min ?? r.state ?? r.mean);
     if (v == null) continue;
     if (!best || (mode === "max" ? v > best.value : v < best.value)) {
-      // Midpoint of the bucket is the best estimate of when it happened.
-      best = { value: v, at: r.start + Math.max(0, r.end - r.start) / 2 };
+      // Midpoint of the bucket estimates when it happened, but never past the
+      // observed part of a bucket that is still running.
+      const mid = r.start + Math.max(0, r.end - r.start) / 2;
+      best = { value: v, at: Math.max(r.start, Math.min(mid, now)) };
     }
   }
   return best;
@@ -178,6 +180,8 @@ function pickExtreme(
 ): HistoryExtreme | null {
   if (!a) return b;
   if (!b) return a;
+  // On a tie, prefer `b` (raw history / live state): it has an exact timestamp.
+  if (Math.abs(a.value - b.value) < 1e-9) return b;
   if (mode === "max") return b.value > a.value ? b : a;
   return b.value < a.value ? b : a;
 }
@@ -202,7 +206,8 @@ export function recordBookFromStatistics(
 
 /** Graph series: one point per row (mean) with a min/max band. */
 export interface GraphSeries {
-  points: Array<{ t: number; v: number; min?: number; max?: number }>;
+  /** `gap` points mark an outage (unavailable/unknown); their `v` is meaningless. */
+  points: Array<{ t: number; v: number; min?: number; max?: number; gap?: boolean }>;
   source: "statistics" | "history";
 }
 
@@ -225,7 +230,7 @@ export function seriesFromHistory(points: HistoryPoint[]): GraphSeries {
   return {
     source: "history",
     points: points
-      .filter((p) => !p.unavailable && Number.isFinite(p.state))
-      .map((p) => ({ t: p.last_changed, v: p.state })),
+      .filter((p) => p.unavailable || Number.isFinite(p.state))
+      .map((p) => (p.unavailable ? { t: p.last_changed, v: 0, gap: true } : { t: p.last_changed, v: p.state })),
   };
 }

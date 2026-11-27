@@ -10,7 +10,7 @@
 import { createServer } from "node:http";
 import { readFile, mkdir, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { extname, join, resolve, dirname } from "node:path";
+import { extname, join, resolve, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -30,7 +30,8 @@ const types = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/ja
 const server = createServer(async (req, res) => {
   const path = decodeURIComponent(new URL(req.url, "http://x").pathname);
   const file = join(root, path.endsWith("/") ? `${path}index.html` : path);
-  if (!file.startsWith(root)) return res.writeHead(403).end();
+  // Directory boundary, not a string prefix: /repo-private must not pass for /repo.
+  if (file !== root && !file.startsWith(root + sep)) return res.writeHead(403).end();
   try {
     const body = await readFile(file);
     res.writeHead(200, { "content-type": types[extname(file)] || "application/octet-stream" }).end(body);

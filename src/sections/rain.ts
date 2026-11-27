@@ -83,12 +83,17 @@ function rainGoal(v: View, ctx: RenderCtx): string {
 export const renderRain: SectionRenderer = (v, ctx) => {
   if (!ctx.showRain) return "";
   const { t } = v;
+  // Bars compare totals, so put them in one unit first (sensors may mix mm and in).
+  const inInches = (st: typeof ctx.today) => {
+    const c = v.conv(st, "in");
+    return c.raw == null ? null : convertValue(c.raw, c.src || "in", "imperial").value;
+  };
   const totals = {
-    today: num(ctx.today?.state),
-    event: num(ctx.event?.state),
-    week: num(ctx.week?.state),
-    month: num(ctx.month?.state),
-    year: num(ctx.year?.state),
+    today: inInches(ctx.today),
+    event: inInches(ctx.event),
+    week: inInches(ctx.week),
+    month: inInches(ctx.month),
+    year: inInches(ctx.year),
   };
   const ariaTotals = t("rain.spark_aria", {
     today: v.fmt("rain_today", ctx.today, 2, "in"),
