@@ -13,6 +13,7 @@ export const CARD_STYLES = `
     --mws-chip-bg: color-mix(in srgb, var(--mws-primary) 10%, var(--ha-card-background, var(--card-background-color)));
   }
   ha-card {
+    display: block;
     padding: var(--mws-pad) var(--mws-pad) 10px;
     background: var(--ha-card-background, var(--card-background-color));
     overflow: hidden;
@@ -307,6 +308,8 @@ export const CARD_STYLES = `
     display: flex;
     gap: 8px;
     overflow-x: auto;
+    /* Scroll instead of widening the card to fit every hour. */
+    contain: inline-size;
     padding: 2px 0 4px;
     scrollbar-width: thin;
   }
@@ -619,4 +622,135 @@ export const CARD_STYLES = `
       max-width: 100%;
     }
   }
+
+  /* --- 0.9: headings, focus, motion ------------------------------------- */
+  h2.title, h3.section-label { margin: 0; }
+  h3.section-label { padding: 0 4px 8px; }
+  .compass, .wind-rose, .precip-timeline, .battery, .fday, .fhour { cursor: pointer; }
+  button:focus-visible,
+  [role="button"]:focus-visible,
+  .graph-chart:focus-visible {
+    outline: 2px solid var(--mws-primary);
+    outline-offset: 2px;
+  }
+  .compass-needle {
+    transform-box: view-box;
+    transform-origin: 50px 50px;
+    transition: transform 420ms ease;
+  }
+  .tile.derived .tile-label { font-style: italic; }
+  .records-source {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--secondary-text-color);
+  }
+  .records-source.warn { color: var(--warning-color, #ff9800); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+
+  /* --- Station health --------------------------------------------------- */
+  .health-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--mws-radius-sm);
+    background: var(--mws-surface);
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .health-summary ha-icon { --mdc-icon-size: 18px; }
+  .health-summary.ok ha-icon { color: var(--success-color, #4caf50); }
+  .health-summary.warn ha-icon { color: var(--warning-color, #ff9800); }
+  .health-sub {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--secondary-text-color);
+    margin: 10px 4px 4px;
+  }
+  .health-list, .health-batteries {
+    list-style: none;
+    margin: 6px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 4px;
+  }
+  .health-batteries { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .health-row, .health-batt {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--mws-border);
+    border-radius: var(--mws-radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .health-row ha-icon, .health-batt ha-icon { --mdc-icon-size: 16px; color: var(--secondary-text-color); }
+  .health-row.bad ha-icon, .health-batt.low ha-icon { color: var(--error-color, #f44336); }
+  .health-row.warn ha-icon { color: var(--warning-color, #ff9800); }
+  .health-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .health-note { color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
+  .health-batt.low .health-note { color: var(--error-color, #f44336); font-weight: 700; }
+  .section[data-section="health"] .grid { margin-top: 6px; }
+
+  /* --- Graph popup ------------------------------------------------------ */
+  dialog.graph-dialog {
+    padding: 0;
+    border: 0;
+    border-radius: var(--mws-radius);
+    width: min(560px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    background: var(--ha-card-background, var(--card-background-color, #fff));
+    color: var(--primary-text-color);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  }
+  dialog.graph-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
+  .graph-inner { padding: 16px 16px 12px; display: grid; gap: 10px; }
+  .graph-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .graph-head h2 { margin: 0; font-size: 16px; font-weight: 650; }
+  .graph-icon-btn, .graph-more, .graph-range {
+    border: 1px solid var(--mws-border);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .graph-icon-btn { width: 36px; height: 36px; display: grid; place-items: center; }
+  .graph-ranges { display: flex; gap: 6px; }
+  .graph-range { padding: 5px 12px; font-size: 12.5px; }
+  .graph-range[aria-checked="true"] {
+    background: color-mix(in srgb, var(--mws-primary) 18%, transparent);
+    border-color: color-mix(in srgb, var(--mws-primary) 50%, transparent);
+    font-weight: 650;
+  }
+  .graph-body { min-height: 170px; }
+  .graph-empty { display: grid; place-items: center; min-height: 160px; color: var(--secondary-text-color); font-size: 13px; }
+  .graph-chart { color: var(--mws-primary); border-radius: var(--mws-radius-sm); touch-action: pan-y; }
+  .graph-svg { display: block; overflow: visible; }
+  .graph-line { fill: none; stroke: currentColor; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .graph-band { fill: currentColor; opacity: 0.16; }
+  .graph-grid { stroke: var(--primary-text-color); stroke-opacity: 0.08; vector-effect: non-scaling-stroke; }
+  .graph-cursor { stroke: var(--primary-text-color); stroke-opacity: 0.5; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+  .graph-dot { display: none; }
+  .graph-axis, .graph-source { display: flex; justify-content: space-between; font-size: 11px; color: var(--secondary-text-color); }
+  .graph-readout { min-height: 1.2em; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .graph-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0; }
+  .graph-stats div { padding: 6px 8px; border-radius: var(--mws-radius-sm); background: var(--mws-surface); }
+  .graph-stats dt { font-size: 11px; color: var(--secondary-text-color); }
+  .graph-stats dd { margin: 2px 0 0; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .graph-foot { display: flex; justify-content: flex-end; }
+  .graph-more { padding: 6px 14px; font-size: 12.5px; }
 `;

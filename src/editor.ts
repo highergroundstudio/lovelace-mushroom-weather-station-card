@@ -1,18 +1,21 @@
 /**
  * Mushroom Weather Station Card — visual editor
  */
-import { CARD_TYPE, DEFAULT_SECTION_ORDER, EDITOR_FIELDS, SECTION_LABELS } from "./const";
+import { CARD_TYPE, DEFAULT_COMFORT, DEFAULT_SECTION_ORDER, EDITOR_FIELDS } from "./const";
 import {
   applyPrefix,
+  currentSeason,
   displayThresholdValue,
   esc,
+  num,
   moveSection,
   moveSectionTo,
   normalizeSectionOrder,
   storeThresholdValue,
   thresholdEditorUnit,
 } from "./helpers";
-import type { CardConfig, HomeAssistant, SectionId, UnitSystem } from "./types";
+import { LANGUAGES, makeTranslator, resolveLanguage, type TranslationKey, type Translate } from "./i18n";
+import type { CardConfig, HomeAssistant, Layout, SectionId, UnitSystem } from "./types";
 import { CARD_VERSION as FALLBACK_VERSION } from "./version";
 
 const CARD_VERSION =
@@ -42,6 +45,53 @@ async function loadHaComponents(): Promise<void> {
   }
 }
 
+/** Miniature wireframes for the layout picker. */
+const LAYOUT_THUMBS: Record<Layout, string> = {
+  full: `<svg viewBox="0 0 60 44" aria-hidden="true">
+    <rect x="2" y="2" width="56" height="10" rx="3" class="t-hero"/>
+    ${[0, 1, 2, 3].map((i) => `<rect x="${2 + i * 14.5}" y="15" width="12" height="8" rx="2"/>`).join("")}
+    ${[0, 1, 2, 3].map((i) => `<rect x="${2 + i * 14.5}" y="25" width="12" height="8" rx="2"/>`).join("")}
+    ${[0, 1, 2, 3, 4].map((i) => `<rect x="${2 + i * 11.6}" y="36" width="9.6" height="6" rx="2"/>`).join("")}
+  </svg>`,
+  compact: `<svg viewBox="0 0 60 44" aria-hidden="true">
+    <rect x="2" y="2" width="56" height="7" rx="2" class="t-hero"/>
+    ${[0, 1].map((r) => [0, 1, 2, 3, 4].map((i) => `<rect x="${2 + i * 11.6}" y="${12 + r * 8}" width="9.6" height="6" rx="1.5"/>`).join("")).join("")}
+  </svg>`,
+  chips: `<svg viewBox="0 0 60 44" aria-hidden="true">
+    ${[0, 1, 2, 3].map((i) => `<rect x="${2 + i * 12}" y="17" width="10" height="9" rx="4.5"/>`).join("")}
+    <rect x="50" y="17" width="8" height="9" rx="4.5" class="t-hero"/>
+  </svg>`,
+};
+
+const SEASON_COLORS: Record<string, string> = {
+  spring: "var(--green-color, #4caf50)",
+  summer: "var(--amber-color, #ffc107)",
+  autumn: "var(--orange-color, #ff9800)",
+  winter: "var(--blue-color, #2196f3)",
+};
+
+/** Temperature × humidity chart with the comfort band highlighted. */
+function comfortPreviewSvg(lo: number, hi: number, hMin: number, hMax: number, unit: string): string {
+  const tMin = Math.min(lo, hi) - 15;
+  const tMax = Math.max(lo, hi) + 15;
+  const W = 220;
+  const H = 90;
+  const x = (t: number) => 24 + ((t - tMin) / Math.max(1, tMax - tMin)) * (W - 30);
+  const y = (h: number) => H - 14 - (h / 100) * (H - 22);
+  const bx = x(Math.min(lo, hi));
+  const bw = Math.max(3, x(Math.max(lo, hi)) - bx);
+  const by = y(Math.max(hMin, hMax));
+  const bh = Math.max(3, y(Math.min(hMin, hMax)) - by);
+  return `<svg class="comfort-preview" viewBox="0 0 ${W} ${H}" width="100%" height="${H}" aria-hidden="true">
+    <line x1="24" y1="${H - 14}" x2="${W - 4}" y2="${H - 14}" class="axis"/>
+    <line x1="24" y1="6" x2="24" y2="${H - 14}" class="axis"/>
+    <rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="4" class="band"/>
+    <text x="${(bx + bw / 2).toFixed(1)}" y="${H - 3}" text-anchor="middle">${Math.round(lo)}–${Math.round(hi)}${unit}</text>
+    <text x="20" y="${(by + 4).toFixed(1)}" text-anchor="end">${Math.round(Math.max(hMin, hMax))}%</text>
+    <text x="20" y="${(by + bh).toFixed(1)}" text-anchor="end">${Math.round(Math.min(hMin, hMax))}%</text>
+  </svg>`;
+}
+
 class MushroomWeatherStationCardEditor extends HTMLElement {
   private _config: CardConfig = { entities: {}, layout: "full", labels: {}, units: {} };
   private _hass?: HomeAssistant;
@@ -49,6 +99,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   private _built = false;
   private _tab: "layout" | "entities" | "display" | "order" = "layout";
   private _dragFrom: number | null = null;
+  private _t: Translate = makeTranslator("en");
+  private _lang = "en";
 
   setConfig(config: CardConfig): void {
     this._config = { entities: {}, layout: "full", labels: {}, units: {}, ...config };
@@ -58,6 +110,10 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
 
   set hass(hass: HomeAssistant) {
     this._hass = hass;
+    // The editor may have been built (in English) before hass arrived; rebuild
+    // when the effective language changes instead of only refreshing pickers.
+    const lang = resolveLanguage(this._config.language || hass?.locale?.language || hass?.language);
+    if (lang !== this._lang) this._built = false;
     if (this._built && this.shadowRoot) {
       this.shadowRoot.querySelectorAll("ha-entity-picker").forEach((p) => {
         (p as HTMLElement & { hass: HomeAssistant }).hass = hass;
@@ -110,6 +166,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       key === "tablet_mode" ||
       key === "show_updated" ||
       key === "show_beaufort" ||
+      key === "graph_popup" ||
+      key === "derive_missing" ||
       String(key).startsWith("hide_")
     ) {
       (next as Record<string, unknown>)[key] = !!value;
@@ -150,6 +208,12 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     ) {
       const n = value === "" ? undefined : Number(value);
       (next as Record<string, unknown>)[key] = Number.isFinite(n as number) ? n : value;
+    } else if (key === "battery_entities") {
+      const list = String(value || "").split(",").map((v) => v.trim()).filter(Boolean);
+      if (list.length) next.battery_entities = list;
+      else delete next.battery_entities;
+    } else if ((key === "language" || key === "layout") && !value) {
+      delete (next as Record<string, unknown>)[key];
     } else {
       (next as Record<string, unknown>)[key] = value;
     }
@@ -163,8 +227,11 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
   private async _render(): Promise<void> {
     if (!this._config) return;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._lang = resolveLanguage(this._config.language || this._hass?.locale?.language || this._hass?.language);
+    this._t = makeTranslator(this._lang);
+    const t = this._t;
     if (!this._loaded) {
-      this.shadowRoot!.innerHTML = `<p class="help">Loading Home Assistant pickers…</p>`;
+      this.shadowRoot!.innerHTML = `<p class="help">${esc(t("editor.loading"))}</p>`;
       await loadHaComponents();
       this._loaded = true;
     }
@@ -248,15 +315,30 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
           font: inherit;
         }
         .order-row button:disabled { opacity: 0.35; cursor: default; }
+        .layout-picker { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; border: 0; padding: 0; margin: 0; }
+        .layout-picker legend { font-size: 13px; padding: 0 0 6px; }
+        .layout-opt { position: relative; display: grid; gap: 4px; padding: 8px; border: 1px solid var(--divider-color); border-radius: 10px; cursor: pointer; font-size: 12.5px; }
+        .layout-opt input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+        .layout-opt svg { width: 100%; height: auto; }
+        .layout-opt svg rect { fill: color-mix(in srgb, var(--primary-text-color) 14%, transparent); }
+        .layout-opt svg rect.t-hero { fill: color-mix(in srgb, var(--primary-color) 45%, transparent); }
+        .layout-opt .opt-help { font-size: 11px; color: var(--secondary-text-color); }
+        .layout-opt:has(input:checked) { border-color: var(--primary-color); box-shadow: inset 0 0 0 1px var(--primary-color); }
+        .layout-opt:has(input:focus-visible) { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        .preview { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--secondary-text-color); line-height: 1.4; margin-top: -4px; }
+        .swatch { width: 14px; height: 14px; border-radius: 4px; flex-shrink: 0; }
+        .comfort-preview { display: block; color: var(--secondary-text-color); }
+        .comfort-preview .axis { stroke: var(--divider-color); }
+        .comfort-preview .band { fill: color-mix(in srgb, var(--primary-color) 28%, transparent); stroke: var(--primary-color); }
+        .comfort-preview text { font-size: 9px; fill: currentColor; }
         @media (max-width: 520px) { .row, .slot-extra { grid-template-columns: 1fr; } }
       </style>
       <div class="wrap">
         <div class="version">Mushroom Weather Station Card · v${CARD_VERSION}</div>
         <div class="tabs">
-          <button class="tab ${tab === "layout" ? "on" : ""}" data-tab="layout">Layout</button>
-          <button class="tab ${tab === "entities" ? "on" : ""}" data-tab="entities">Entities</button>
-          <button class="tab ${tab === "order" ? "on" : ""}" data-tab="order">Order</button>
-          <button class="tab ${tab === "display" ? "on" : ""}" data-tab="display">Display</button>
+          ${(["layout", "entities", "order", "display"] as const)
+            .map((id) => `<button class="tab ${tab === id ? "on" : ""}" data-tab="${id}" aria-pressed="${tab === id}">${esc(t(`editor.tab_${id}` as TranslationKey))}</button>`)
+            .join("")}
         </div>
         <div id="tab-body"></div>
       </div>
@@ -272,124 +354,161 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
 
     const body = this.shadowRoot!.getElementById("tab-body")!;
     if (tab === "layout") {
+      const layout: Layout = c.layout || "full";
+      const fmtDate = (d: Date) => d.toLocaleDateString(this._config.language || this._hass?.locale?.language, { month: "short", day: "numeric", year: "numeric" });
+      const recDays = c.records_period === "year" ? 365 : 30;
+      const recPreview = t("editor.records_preview", {
+        start: fmtDate(new Date(Date.now() - recDays * 86400000)),
+        end: fmtDate(new Date()),
+      });
+      const season = currentSeason(new Date(), c.hemisphere === "south" ? "south" : "north");
+      const skinPreview = c.seasonal_skins === false
+        ? t("editor.skin_off")
+        : t("editor.skin_preview", { season: t(`editor.season_${season}` as TranslationKey) });
       body.innerHTML = `
+        <label class="field">${esc(t("editor.name"))}
+          <input data-key="name" value="${esc(c.name || "")}" placeholder="Weather Station" />
+        </label>
+        <fieldset class="layout-picker">
+          <legend>${esc(t("editor.layout"))}</legend>
+          ${(["full", "compact", "chips"] as Layout[])
+            .map((id) => `<label class="layout-opt">
+              <input type="radio" name="layout" data-key="layout" value="${id}" ${layout === id ? "checked" : ""} />
+              ${LAYOUT_THUMBS[id]}
+              <span>${esc(t(`editor.layout_${id}` as TranslationKey))}</span>
+              <span class="opt-help">${esc(t(`editor.layout_${id}_help` as TranslationKey))}</span>
+            </label>`)
+            .join("")}
+        </fieldset>
+        <label class="field">${esc(t("editor.prefix"))}
+          <input data-key="prefix" value="${esc(c.prefix || "")}" placeholder="ws" />
+        </label>
         <div class="row">
-          <label class="field">Name
-            <input data-key="name" value="${esc(c.name || "")}" placeholder="Weather Station" />
+          <label class="field">${esc(t("editor.unit_system"))}
+            <select data-key="unit_system">
+              <option value="native" ${!c.unit_system || c.unit_system === "native" ? "selected" : ""}>${esc(t("editor.unit_native"))}</option>
+              <option value="imperial" ${c.unit_system === "imperial" ? "selected" : ""}>${esc(t("editor.unit_imperial"))}</option>
+              <option value="metric" ${c.unit_system === "metric" ? "selected" : ""}>${esc(t("editor.unit_metric"))}</option>
+            </select>
           </label>
-          <label class="field">Layout
-            <select data-key="layout">
-              <option value="full" ${c.layout === "full" || !c.layout ? "selected" : ""}>Full station</option>
-              <option value="compact" ${c.layout === "compact" ? "selected" : ""}>Compact</option>
-              <option value="chips" ${c.layout === "chips" ? "selected" : ""}>Chips glance bar</option>
+          <label class="field">${esc(t("editor.language"))}
+            <select data-key="language">
+              <option value="" ${!c.language ? "selected" : ""}>${esc(t("editor.language_auto"))}</option>
+              ${LANGUAGES.map((l) => `<option value="${l.code}" ${c.language === l.code ? "selected" : ""}>${esc(l.name)}</option>`).join("")}
             </select>
           </label>
         </div>
-        <label class="field">Entity prefix
-          <input data-key="prefix" value="${esc(c.prefix || "")}" placeholder="ws" />
-        </label>
-        <label class="field">Unit system
-          <select data-key="unit_system">
-            <option value="native" ${!c.unit_system || c.unit_system === "native" ? "selected" : ""}>Native (as reported)</option>
-            <option value="imperial" ${c.unit_system === "imperial" ? "selected" : ""}>Imperial (°F, mph, in)</option>
-            <option value="metric" ${c.unit_system === "metric" ? "selected" : ""}>Metric (°C, km/h, mm)</option>
-          </select>
-        </label>
         <div id="options-switches" class="switch-list"></div>
         <div class="row">
-          <label class="field">Forecast days
+          <label class="field">${esc(t("editor.forecast_days"))}
             <input data-key="forecast_days" type="number" min="1" max="7" value="${esc(c.forecast_days ?? "5")}" placeholder="5" />
           </label>
-          <label class="field">Hourly hours
+          <label class="field">${esc(t("editor.hourly_hours"))}
             <input data-key="hourly_forecast_hours" type="number" min="6" max="24" value="${esc(c.hourly_forecast_hours ?? "24")}" placeholder="24" />
           </label>
         </div>
         <div class="row">
-          <label class="field">Stale after (minutes)
+          <label class="field">${esc(t("editor.stale_minutes"))}
             <input data-key="stale_minutes" type="number" min="0" value="${esc(c.stale_minutes ?? "30")}" placeholder="30" />
           </label>
-          <label class="field">History window (hours)
+          <label class="field">${esc(t("editor.history_hours"))}
             <input data-key="history_hours" type="number" min="6" max="48" value="${esc(c.history_hours ?? "24")}" placeholder="24" />
           </label>
         </div>
         <div class="row">
-          <label class="field">Record book period
+          <label class="field">${esc(t("editor.records_period"))}
             <select data-key="records_period">
-              <option value="month" ${!c.records_period || c.records_period === "month" ? "selected" : ""}>Month (30 days)</option>
-              <option value="year" ${c.records_period === "year" ? "selected" : ""}>Year (365 days)</option>
+              <option value="month" ${!c.records_period || c.records_period === "month" ? "selected" : ""}>${esc(t("editor.records_month"))}</option>
+              <option value="year" ${c.records_period === "year" ? "selected" : ""}>${esc(t("editor.records_year"))}</option>
             </select>
           </label>
-          <label class="field">Hemisphere (seasonal skins)
+          <label class="field">${esc(t("editor.hemisphere"))}
             <select data-key="hemisphere">
-              <option value="north" ${!c.hemisphere || c.hemisphere === "north" ? "selected" : ""}>Northern</option>
-              <option value="south" ${c.hemisphere === "south" ? "selected" : ""}>Southern</option>
+              <option value="north" ${!c.hemisphere || c.hemisphere === "north" ? "selected" : ""}>${esc(t("editor.hemisphere_north"))}</option>
+              <option value="south" ${c.hemisphere === "south" ? "selected" : ""}>${esc(t("editor.hemisphere_south"))}</option>
             </select>
           </label>
         </div>
-        <label class="field">Rain month normal
+        <div class="row">
+          <p class="preview">${esc(recPreview)}</p>
+          <p class="preview"><span class="swatch" style="background:${c.seasonal_skins === false ? "var(--divider-color)" : SEASON_COLORS[season]}"></span>${esc(skinPreview)}</p>
+        </div>
+        <label class="field">${esc(t("editor.battery_entities"))}
+          <input data-key="battery_entities" value="${esc(Array.isArray(c.battery_entities) ? c.battery_entities.join(", ") : c.battery_entities || "")}" placeholder="sensor.ws_wh65_battery, …" />
+          <span class="help">${esc(t("editor.battery_entities_help"))}</span>
+        </label>
+        <label class="field">${esc(t("editor.rain_normal"))}
           <input data-key="rain_month_normal" type="number" min="0" step="0.01" value="${esc(c.rain_month_normal ?? "")}" placeholder="e.g. 2.5" />
         </label>
         <div id="weather-picker"></div>
         <div id="alert-picker"></div>
         <div id="sun-picker"></div>
         <div id="moon-picker"></div>
-        <h3>Sections</h3>
-        <p class="help">Off = show the section when it has data. On = hide it even if sensors exist.</p>
+        <h3>${esc(t("editor.sections"))}</h3>
+        <p class="help">${esc(t("editor.sections_help"))}</p>
         <div id="section-switches" class="switch-list"></div>
       `;
     } else if (tab === "display") {
       const bandSystem = system === "native" ? "imperial" : system;
       const comfortLo = displayThresholdValue(Number(c.comfort_temp_min ?? 65), "temp", bandSystem);
       const comfortHi = displayThresholdValue(Number(c.comfort_temp_max ?? 78), "temp", bandSystem);
+      const loN = num(c.comfort_temp_min) ?? DEFAULT_COMFORT.tempMin;
+      const hiN = num(c.comfort_temp_max) ?? DEFAULT_COMFORT.tempMax;
+      const hMinN = num(c.comfort_humidity_min) ?? DEFAULT_COMFORT.humidityMin;
+      const hMaxN = num(c.comfort_humidity_max) ?? DEFAULT_COMFORT.humidityMax;
+      const bandText = `${Math.round(displayThresholdValue(loN, "temp", bandSystem))}–${Math.round(displayThresholdValue(hiN, "temp", bandSystem))}${tempUnit} · ${hMinN}–${hMaxN}% RH`;
       body.innerHTML = `
         <div class="row">
-          <label class="field">Battery warning threshold
+          <label class="field">${esc(t("editor.battery_threshold"))}
             <input data-key="battery_warning_threshold" type="number" value="${esc(c.battery_warning_threshold ?? "")}" placeholder="20" />
           </label>
-          <label class="field">UV purple at / above
+          <label class="field">${esc(t("editor.uv_purple"))}
             <input data-key="uv_purple_above" type="number" value="${esc(c.uv_purple_above ?? "8")}" placeholder="8" />
           </label>
         </div>
-        <label class="field">Temperature blue at / below (${esc(tempUnit)})
+        <label class="field">${esc(t("editor.temp_blue", { unit: tempUnit }))}
           <input data-key="temp_blue_below" type="number" value="${esc(Number(displayTempBlue.toFixed(1)))}" placeholder="${tempUnit === "°C" ? "0" : "32"}" />
         </label>
-        <h3>Comfort band</h3>
-        <p class="help">Outdoor comfort hours use this temp×humidity window. Temperatures follow the selected unit system; humidity is %RH.</p>
+        <h3>${esc(t("editor.comfort_band"))}</h3>
+        <p class="help">${esc(t("editor.comfort_help"))}</p>
+        <div role="img" aria-label="${esc(t("editor.comfort_preview_aria", { band: bandText }))}">
+          ${comfortPreviewSvg(displayThresholdValue(loN, "temp", bandSystem), displayThresholdValue(hiN, "temp", bandSystem), hMinN, hMaxN, tempUnit)}
+        </div>
         <div class="row">
-          <label class="field">Comfort temp min (${esc(tempUnit)})
+          <label class="field">${esc(t("editor.comfort_temp_min", { unit: tempUnit }))}
             <input data-key="comfort_temp_min" type="number" value="${esc(Number(comfortLo.toFixed(1)))}" />
           </label>
-          <label class="field">Comfort temp max (${esc(tempUnit)})
+          <label class="field">${esc(t("editor.comfort_temp_max", { unit: tempUnit }))}
             <input data-key="comfort_temp_max" type="number" value="${esc(Number(comfortHi.toFixed(1)))}" />
           </label>
         </div>
         <div class="row">
-          <label class="field">Comfort humidity min (%)
+          <label class="field">${esc(t("editor.comfort_hum_min"))}
             <input data-key="comfort_humidity_min" type="number" min="0" max="100" value="${esc(c.comfort_humidity_min ?? "30")}" />
           </label>
-          <label class="field">Comfort humidity max (%)
+          <label class="field">${esc(t("editor.comfort_hum_max"))}
             <input data-key="comfort_humidity_max" type="number" min="0" max="100" value="${esc(c.comfort_humidity_max ?? "60")}" />
           </label>
         </div>
-        <p class="help">Threshold cutoffs follow the selected unit system (${esc(system)}). Stored rules stay compatible with imperial defaults. Per-slot labels and units are under Entities.</p>
+        <p class="help">${esc(t("editor.thresholds_help", { system }))}</p>
       `;
     } else if (tab === "order") {
       body.innerHTML = `
-        <p class="help">Drag sections to reorder, or use ↑ / ↓. Hidden sections stay listed but do not render.</p>
+        <p class="help">${esc(t("editor.order_help"))}</p>
         <div class="order-list" id="order-list">
           ${order
             .map(
               (id, index) => `
             <div class="order-row" draggable="true" data-index="${index}">
               <div class="handle" aria-hidden="true">⠿</div>
-              <div class="name">${index + 1}. ${esc(SECTION_LABELS[id])}</div>
-              <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
-              <button type="button" data-move="down" data-index="${index}" ${index === order.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+              <div class="name">${index + 1}. ${esc(t(`section.${id}` as TranslationKey))}</div>
+              <button type="button" data-move="up" data-index="${index}" ${index === 0 ? "disabled" : ""} aria-label="${esc(t("editor.move_up", { name: t(`section.${id}` as TranslationKey) }))}">↑</button>
+              <button type="button" data-move="down" data-index="${index}" ${index === order.length - 1 ? "disabled" : ""} aria-label="${esc(t("editor.move_down", { name: t(`section.${id}` as TranslationKey) }))}">↓</button>
             </div>`,
             )
             .join("")}
         </div>
-        <button type="button" id="reset-order" style="margin-top:8px;border:1px solid var(--divider-color);background:transparent;color:var(--primary-text-color);border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;">Reset to default order</button>
+        <button type="button" id="reset-order" style="margin-top:8px;border:1px solid var(--divider-color);background:transparent;color:var(--primary-text-color);border-radius:8px;padding:8px 12px;cursor:pointer;font:inherit;">${esc(t("editor.order_reset"))}</button>
       `;
       const rows = [...body.querySelectorAll(".order-row")] as HTMLElement[];
       rows.forEach((row) => {
@@ -431,7 +550,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         void this._render();
       });
     } else {
-      body.innerHTML = `<p class="help">Prefix auto-fills empty slots. Pickers override one sensor at a time.</p><div id="pickers"></div>${pickerReady ? "" : `<p class="help">Entity picker did not load. Reload Lovelace resources.</p>`}`;
+      body.innerHTML = `<p class="help">${esc(t("editor.entities_help"))}</p><div id="pickers"></div>${pickerReady ? "" : `<p class="help">${esc(t("editor.picker_missing"))}</p>`}`;
     }
 
     body.querySelectorAll("input, select").forEach((el) => {
@@ -443,41 +562,40 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
     });
 
     if (tab === "layout") {
+      const sw = (key: string, id: string) => ({
+        key,
+        title: t(`editor.${id}` as TranslationKey),
+        help: t(`editor.${id}_help` as TranslationKey),
+      });
       this._fillSwitches("options-switches", [
-        { key: "tablet_mode", title: "Tablet mode", help: "Tap does nothing. Hold a tile for more-info." },
-        { key: "show_empty", title: "Show empty tiles", help: "Keep tiles visible when the entity is missing." },
-        { key: "show_forecast", title: "Show daily forecast", help: "Needs a weather entity below." },
-        { key: "show_hourly_forecast", title: "Show hourly forecast", help: "12–24h strip with precip % and temp." },
-        { key: "show_history_sparklines", title: "History sparklines", help: "Mini charts on temp, humidity, wind, pressure." },
-        { key: "show_wind_rose", title: "Wind rose", help: "Direction distribution from history." },
-        { key: "show_alerts", title: "Weather alerts banner", help: "From weather attributes or alert entity." },
-        { key: "show_precip_timeline", title: "Precipitation timeline", help: "Hourly rain-rate intensity bars in the rain section." },
-        { key: "show_records", title: "Record book", help: "Month/year extremes from HA history." },
-        { key: "show_comfort", title: "Comfort zones", help: "Hours in temp×humidity comfort band + scatter." },
-        { key: "seasonal_skins", title: "Seasonal skins", help: "Accent the card by season and weather condition." },
-        { key: "show_updated", title: "Show last updated", help: "Status chip with relative update time." },
-        { key: "show_beaufort", title: "Show Beaufort scale", help: "Add Beaufort number on the wind speed tile." },
+        sw("tablet_mode", "sw_tablet"),
+        sw("graph_popup", "sw_graph"),
+        sw("derive_missing", "sw_derive"),
+        sw("show_empty", "sw_empty"),
+        sw("show_forecast", "sw_daily"),
+        sw("show_hourly_forecast", "sw_hourly"),
+        sw("show_history_sparklines", "sw_sparks"),
+        sw("show_wind_rose", "sw_rose"),
+        sw("show_alerts", "sw_alerts"),
+        sw("show_precip_timeline", "sw_precip"),
+        sw("show_records", "sw_records"),
+        sw("show_comfort", "sw_comfort"),
+        sw("seasonal_skins", "sw_skins"),
+        sw("show_updated", "sw_updated"),
+        sw("show_beaufort", "sw_beaufort"),
       ]);
-      this._fillSwitches("section-switches", [
-        { key: "hide_conditions", title: "Hide conditions", help: "Outdoor, feels like, high / low, humidity, dew point" },
-        { key: "hide_wind", title: "Hide wind", help: "Compass, rose, speed, gust, max gust" },
-        { key: "hide_rain", title: "Hide rain", help: "Goals, timeline, sparkline, and rain totals" },
-        { key: "hide_sun", title: "Hide sun & moon", help: "UV, solar, light, sunrise/sunset, moon" },
-        { key: "hide_soil", title: "Hide soil", help: "Moisture/temp channels 1–8 and leaf wetness" },
-        { key: "hide_lightning", title: "Hide lightning", help: "Strike count, distance, last strike" },
-        { key: "hide_air", title: "Hide air quality", help: "PM2.5, AQI, VOC, noise" },
-        { key: "hide_more", title: "Hide station extras", help: "Pressure, indoor, CO₂" },
-        { key: "hide_records", title: "Hide record book", help: "Month/year extremes grid" },
-        { key: "hide_comfort", title: "Hide comfort zones", help: "Comfort hours and scatter" },
-        { key: "hide_battery", title: "Hide battery", help: "Status line at the bottom" },
-      ]);
+      this._fillSwitches(
+        "section-switches",
+        ["conditions", "wind", "rain", "sun", "soil", "lightning", "air", "more", "health", "records", "comfort", "battery"]
+          .map((id) => sw(`hide_${id}`, `hide_${id}`)),
+      );
     }
 
     if (tab === "layout" && pickerReady && this._hass) {
-      this._mountPicker("weather-picker", "Forecast weather entity", c.weather_entity || "", ["weather"], "weather_entity");
-      this._mountPicker("alert-picker", "Alert entity (optional)", c.alert_entity || "", ["sensor", "binary_sensor", "event"], "alert_entity");
-      this._mountPicker("sun-picker", "Sun entity", c.sun_entity || "sun.sun", ["sun"], "sun_entity");
-      this._mountPicker("moon-picker", "Moon entity (optional)", c.moon_entity || "", ["sensor"], "moon_entity");
+      this._mountPicker("weather-picker", t("editor.weather_entity"), c.weather_entity || "", ["weather"], "weather_entity");
+      this._mountPicker("alert-picker", t("editor.alert_entity"), c.alert_entity || "", ["sensor", "binary_sensor", "event"], "alert_entity");
+      this._mountPicker("sun-picker", t("editor.sun_entity"), c.sun_entity || "sun.sun", ["sun"], "sun_entity");
+      this._mountPicker("moon-picker", t("editor.moon_entity"), c.moon_entity || "", ["sensor"], "moon_entity");
     }
 
     if (tab !== "entities" || !pickerReady || !this._hass) {
@@ -519,8 +637,8 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       const extra = document.createElement("div");
       extra.className = "slot-extra";
       extra.innerHTML = `
-        <input data-section="labels" data-key="${field.key}" placeholder="Custom label" value="${esc(labels[field.key] || "")}" />
-        <input data-section="units" data-key="${field.key}" placeholder="Custom unit" value="${esc(units[field.key] || "")}" />
+        <input data-section="labels" data-key="${field.key}" placeholder="${esc(t("editor.custom_label"))}" aria-label="${esc(`${field.label} · ${t("editor.custom_label")}`)}" value="${esc(labels[field.key] || "")}" />
+        <input data-section="units" data-key="${field.key}" placeholder="${esc(t("editor.custom_unit"))}" aria-label="${esc(`${field.label} · ${t("editor.custom_unit")}`)}" value="${esc(units[field.key] || "")}" />
       `;
       extra.querySelectorAll("input").forEach((inp) => {
         inp.addEventListener("change", (ev) => {
@@ -589,6 +707,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
         "show_records",
         "show_comfort",
         "seasonal_skins",
+        "derive_missing",
       ]);
       if (item.key === "show_hourly_forecast") {
         // Match card: unset + weather_entity ⇒ on; explicit false ⇒ off.
@@ -600,6 +719,7 @@ class MushroomWeatherStationCardEditor extends HTMLElement {
       } else {
         sw.checked = !!(this._config as Record<string, unknown>)[item.key];
       }
+      sw.setAttribute("aria-label", item.title);
       sw.addEventListener("change", (ev) => {
         ev.stopPropagation();
         this._setField(item.key, !!sw.checked);

@@ -1,0 +1,61 @@
+name: Demo site
+
+# Publishes demo/ (with the built card and Material Design Icons) to GitHub Pages.
+# One-time setup: Settings → Pages → Build and deployment → Source: GitHub Actions.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "demo/**"
+      - "scripts/build.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/pages.yaml"
+  workflow_dispatch:
+
+# Least privilege: the build only reads; Pages + OIDC are granted to deploy alone.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Assemble site
+        run: |
+          mkdir -p _site/demo/vendor _site/dist
+          cp demo/index.html _site/demo/
+          cp dist/mushroom-weather-station-card.js dist/mushroom-weather-station-card-editor.js _site/dist/
+          cp node_modules/@mdi/js/mdi.js _site/demo/vendor/mdi.js
+          cat > _site/index.html <<'HTML'
+          <!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=demo/">
+          <title>Mushroom Weather Station Card demo</title><a href="demo/">Open the demo</a>
+          HTML
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -60,9 +60,27 @@ export function parseWindDirection(st: HassEntity | null | undefined): { deg: nu
   return { deg: null, card: null };
 }
 
-export function fmtNum(n: number | null | undefined, digits = 1): string {
-  if (n == null) return "—";
-  return Number(n).toFixed(digits).replace(/\.0$/, "");
+let numberLocale: string | undefined;
+
+/** Locale used by `fmtNum` for the decimal separator (e.g. `de` → `21,5`). */
+export function setNumberLocale(locale: string | undefined): void {
+  numberLocale = locale || undefined;
+}
+
+export function fmtNum(n: number | null | undefined, digits = 1, locale = numberLocale): string {
+  if (n == null || !Number.isFinite(Number(n))) return "—";
+  const fixed = Number(n).toFixed(digits).replace(/\.0$/, "");
+  if (!locale || locale.startsWith("en")) return fixed;
+  try {
+    const decimals = fixed.includes(".") ? fixed.split(".")[1].length : 0;
+    return new Intl.NumberFormat(locale, {
+      minimumFractionDigits: decimals,
+      maximumFractionDigits: decimals,
+      useGrouping: false,
+    }).format(Number(fixed));
+  } catch {
+    return fixed;
+  }
 }
 
 export function colorFromThresholds(value: number | null, rules: ThresholdRule[] | undefined, fallback = "grey"): string {
@@ -80,21 +98,28 @@ export function iconColorVar(colorName: string | undefined): string {
   return COLOR_VARS[colorName] || colorName;
 }
 
-export function uvMeta(uv: number | null, color?: string): { label: string; color: string } {
-  if (uv == null) return { label: "—", color: color || "grey" };
-  if (uv >= 11) return { label: "Extreme", color: color || "purple" };
-  if (uv >= 8) return { label: "Very high", color: color || "purple" };
-  if (uv >= 6) return { label: "High", color: color || "orange" };
-  if (uv >= 3) return { label: "Moderate", color: color || "amber" };
-  return { label: "Low", color: color || "green" };
+/** `key` is an i18n key (see src/i18n/en.ts); `label` is the English fallback. */
+export interface MetaLabel {
+  label: string;
+  color: string;
+  key: string;
 }
 
-export function pm25Meta(value: number | null, color?: string): { label: string; color: string } {
-  if (value == null) return { label: "PM2.5", color: color || "grey" };
-  if (value >= 55) return { label: "Unhealthy", color: color || "red" };
-  if (value >= 35) return { label: "Sensitive", color: color || "orange" };
-  if (value >= 12) return { label: "Moderate", color: color || "amber" };
-  return { label: "Good", color: color || "green" };
+export function uvMeta(uv: number | null, color?: string): MetaLabel {
+  if (uv == null) return { label: "—", color: color || "grey", key: "tile.uv" };
+  if (uv >= 11) return { label: "Extreme", color: color || "purple", key: "uv.extreme" };
+  if (uv >= 8) return { label: "Very high", color: color || "purple", key: "uv.very_high" };
+  if (uv >= 6) return { label: "High", color: color || "orange", key: "uv.high" };
+  if (uv >= 3) return { label: "Moderate", color: color || "amber", key: "uv.moderate" };
+  return { label: "Low", color: color || "green", key: "uv.low" };
+}
+
+export function pm25Meta(value: number | null, color?: string): MetaLabel {
+  if (value == null) return { label: "PM2.5", color: color || "grey", key: "tile.pm25" };
+  if (value >= 55) return { label: "Unhealthy", color: color || "red", key: "air.unhealthy" };
+  if (value >= 35) return { label: "Sensitive", color: color || "orange", key: "air.sensitive" };
+  if (value >= 12) return { label: "Moderate", color: color || "amber", key: "air.moderate" };
+  return { label: "Good", color: color || "green", key: "air.good" };
 }
 
 export function beaufort(mph: number | null | undefined): number | null {
@@ -171,12 +196,16 @@ export function relativeTime(date: Date, locale?: string): string {
   return rtf.format(Math.round(diffSec / (86400 * 30)), "month");
 }
 
-export function formatLastRain(st: HassEntity | null | undefined, hass?: HomeAssistant): string {
+export function formatLastRain(
+  st: HassEntity | null | undefined,
+  hass?: HomeAssistant,
+  localeOverride?: string,
+): string {
   const raw = st?.state;
   if (!raw || raw === "unknown" || raw === "unavailable") return "—";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return String(raw);
-  const locale = hass?.locale?.language || undefined;
+  const locale = localeOverride || hass?.locale?.language || undefined;
   try {
     return relativeTime(date, locale);
   } catch {
@@ -196,6 +225,9 @@ export function batteryInfo(st: HassEntity | null | undefined, threshold: number
   low: boolean;
   text: string;
   icon: string;
+  key: string;
+  pct: string;
+  level: number | null;
 } | null {
   if (!st) return null;
   const n = num(st.state);
@@ -206,11 +238,27 @@ export function batteryInfo(st: HassEntity | null | undefined, threshold: number
     return {
       low,
       text: low ? `Low Battery · ${pct}` : `Station battery ${pct}`,
-      icon: low ? "mdi:battery-alert" : "mdi:battery",
+      icon: low ? "mdi:battery-alert" : batteryLevelIcon(n),
+      key: low ? "battery.low_pct" : "battery.pct",
+      pct,
+      level: n,
     };
   }
   const low = st.state === "on";
-  return { low, text: low ? "Low Battery" : "Station battery OK", icon: low ? "mdi:battery-alert" : "mdi:battery" };
+  return {
+    low,
+    text: low ? "Low Battery" : "Station battery OK",
+    icon: low ? "mdi:battery-alert" : "mdi:battery",
+    key: low ? "battery.low" : "battery.ok",
+    pct: "",
+    level: null,
+  };
+}
+
+export function batteryLevelIcon(level: number): string {
+  if (level >= 95) return "mdi:battery";
+  const step = Math.max(10, Math.min(90, Math.round(level / 10) * 10));
+  return `mdi:battery-${step}`;
 }
 
 export function mergeThresholds(config: CardConfig | undefined, key: string): ThresholdRule[] {
@@ -235,13 +283,14 @@ function unitKind(unit: string): string | null {
   if (["mph", "km/h", "kmh", "kph", "m/s", "m/sec"].includes(u)) return "speed";
   if (["in", "mm", "in/h", "in/hr", "mm/h", "mm/hr"].includes(u)) return u.includes("/") ? "rate" : "rain";
   if (["inhg", "hpa", "mbar", "mb"].includes(u)) return "pressure";
+  if (["mi", "km"].includes(u)) return "distance";
   return null;
 }
 
 function sourceSystem(unit: string): "imperial" | "metric" | null {
   const u = String(unit || "").toLowerCase().replace("°", "");
-  if (["f", "mph", "in", "in/h", "in/hr", "inhg"].includes(u)) return "imperial";
-  if (["c", "km/h", "kmh", "kph", "m/s", "m/sec", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb"].includes(u)) return "metric";
+  if (["f", "mph", "in", "in/h", "in/hr", "inhg", "mi"].includes(u)) return "imperial";
+  if (["c", "km/h", "kmh", "kph", "m/s", "m/sec", "mm", "mm/h", "mm/hr", "hpa", "mbar", "mb", "km"].includes(u)) return "metric";
   return null;
 }
 
@@ -276,6 +325,9 @@ export function convertValue(
   if (kind === "rate") {
     return target === "metric" ? { value: value * 25.4, unit: "mm/h" } : { value: value / 25.4, unit: "in/h" };
   }
+  if (kind === "distance") {
+    return target === "metric" ? { value: value * 1.60934, unit: "km" } : { value: value / 1.60934, unit: "mi" };
+  }
   if (kind === "pressure") {
     return target === "metric" ? { value: value * 33.8639, unit: "hPa" } : { value: value / 33.8639, unit: "inHg" };
   }
@@ -285,12 +337,12 @@ export function convertValue(
 export function pressureTrendMeta(
   current: number | null,
   previous: number | null | undefined,
-): { label: string; icon: string; color: string } {
-  if (current == null || previous == null) return { label: "", icon: "mdi:minus", color: "grey" };
+): { label: string; icon: string; color: string; key: string } {
+  if (current == null || previous == null) return { label: "", icon: "mdi:minus", color: "grey", key: "" };
   const delta = current - previous;
-  if (Math.abs(delta) < 0.02) return { label: "Steady", icon: "mdi:arrow-right", color: "grey" };
-  if (delta > 0) return { label: "Rising", icon: "mdi:arrow-top-right", color: "green" };
-  return { label: "Falling", icon: "mdi:arrow-bottom-right", color: "orange" };
+  if (Math.abs(delta) < 0.02) return { label: "Steady", icon: "mdi:arrow-right", color: "grey", key: "trend.steady" };
+  if (delta > 0) return { label: "Rising", icon: "mdi:arrow-top-right", color: "green", key: "trend.rising" };
+  return { label: "Falling", icon: "mdi:arrow-bottom-right", color: "orange", key: "trend.falling" };
 }
 
 export function normalizeSectionOrder(order: unknown): SectionId[] {
@@ -346,21 +398,24 @@ export function moveSectionTo(order: SectionId[], from: number, to: number): Sec
   return next;
 }
 
-export function aqiMeta(value: number | null, color?: string): { label: string; color: string } {
-  if (value == null) return { label: "AQI", color: color || "grey" };
-  if (value >= 150) return { label: "Unhealthy", color: color || "red" };
-  if (value >= 100) return { label: "Sensitive", color: color || "orange" };
-  if (value >= 50) return { label: "Moderate", color: color || "amber" };
-  return { label: "Good", color: color || "green" };
+export function aqiMeta(value: number | null, color?: string): MetaLabel {
+  if (value == null) return { label: "AQI", color: color || "grey", key: "tile.aqi" };
+  if (value >= 150) return { label: "Unhealthy", color: color || "red", key: "air.unhealthy" };
+  if (value >= 100) return { label: "Sensitive", color: color || "orange", key: "air.sensitive" };
+  if (value >= 50) return { label: "Moderate", color: color || "amber", key: "air.moderate" };
+  return { label: "Good", color: color || "green", key: "air.good" };
 }
 
-export function moonMeta(state: string | undefined): { label: string; icon: string } {
+const MOON_KEY_ALIASES: Record<string, string> = { new: "new_moon", full: "full_moon", third_quarter: "last_quarter" };
+
+export function moonMeta(state: string | undefined): { label: string; icon: string; key: string } {
   const raw = String(state || "").trim().toLowerCase().replace(/\s+/g, "_");
   const icon = MOON_ICONS[raw] || "mdi:moon-waning-crescent";
   const label = raw
     ? raw.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())
     : "Moon";
-  return { label, icon };
+  const phase = MOON_KEY_ALIASES[raw] || raw;
+  return { label, icon, key: phase && MOON_ICONS[phase] ? `moon.${phase}` : "moon.label" };
 }
 
 export function daysSinceTimestamp(raw: string | undefined): number | null {
